@@ -627,6 +627,419 @@ uint64_t getLayerKVOffset(uint32_t physical_layer_idx,
 | **GQAKVCacheManager** | 管理GQA完整注意力层的KV Cache | 层索引、KV张量 | KV字节数据 |
 | **LayerTypeResolver** | 解析层类型配置 | model_config.json | 层类型位图 |
 
+### 3.3 核心识��差异：Mooncake需要识别的关键信息
+
+**3.3.1 模型架构识别**
+
+Mooncake需要从推理引擎获取以下关键信息来正确处理混合注意力KVCache：
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    需要识别的核心信息                                        │
+├─────────────────────────────────────────────────────────────────────────────┤
+��                                                                              │
+│  1. 模型架构类型识别                                                         │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │ 输入: model_config.json                                             │    │
+│  │                                                                      │    │
+│  │ 关键字段:                                                            │    │
+│  │   - "model_type": "qwen3_5_text"                                    │    │
+│  │   - "architectures": ["Qwen3_5ForCausalLM"]                         │    │
+│  │   - "layer_types": ["linear_attention", "linear_attention", ...]   │    │
+│  │                                                                      │    │
+│  │ 识别逻辑:                                                            │    │
+│  │   if "layer_types" field exists:                                    │    │
+│  │       → HYBRID_ATTENTION model (需要混合处理)                        │    │
+│  │   else if all layers are "full_attention":                           │    │
+│  │       → STANDARD_GQA model (传统处理)                                │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
+│                                                                              │
+│  2. 层类型配置解析                                                           │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │ 从 model_config.json 提取:                                         │    │
+│  │                                                                      │    │
+│  │ {                                                                    │    │
+│  │   "num_hidden_layers": 24,                                          │    │
+│  │   "layer_types": [                                                  │    │
+│  │     "linear_attention", "linear_attention", "linear_attention",     │    │
+│  │     "full_attention",                                               │    │
+│  │     "linear_attention", "linear_attention", "linear_attention",     │    │
+│  │     "full_attention",                                               │    │
+│  │     ... (重复pattern)                                                │    │
+│  │   ],                                                                 │    │
+│  │   "full_attention_interval": 4,  // 每4层一个完整注意力层            │    │
+│  │                                                                      │    │
+│  │   // GDN参数                                                         │    │
+│  │   "linear_num_key_heads": 16,                                       │    │
+│  │   "linear_key_head_dim": 128,                                       │    │
+│  │   "linear_value_head_dim": 128,                                     │    │
+│  │   "linear_conv_kernel_dim": 4,                                      │    │
+│  │   "ssm_state_dim": 256,          // SSM状态维度                     │    │
+│  │                                                                      │    │
+│  │   // GQA参数                                                         │    │
+│  │   "num_attention_heads": 32,        // Query头数                    │    │
+│  │   "num_key_value_heads": 4,         // KV头组数                     │    │
+│  │   "head_dim": 128                                                    │    │
+│  │ }                                                                    │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
+│                                                                              │
+│  3. 运行时状态差异识别                                                       │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │ GDN层状态结构 (与标准KV Cache完全不同):                             │    │
+│  │                                                                      │    │
+│  │ GDN层 past_key_values[layer_idx] = {                                │    │
+│  │     "ssm_state": Tensor[num_heads, head_dim, state_dim],            │    │
+│  │     "conv_state": Tensor[num_heads, kernel_dim]                     │    │
+│  │ }                                                                    │    │
+│  │                                                                      │    │
+│  │ GQA层 past_key_values[layer_idx] = {                                │    │
+│  │     "key": Tensor[num_kv_groups, seq_len, head_dim],                │    │
+│  │     "value": Tensor[num_kv_groups, seq_len, head_dim]               │    │
+│  │ }                                                                    │    │
+│  │                                                                      │    │
+│  │ 识别方法:                                                            │    │
+│  │   if past_key_values[layer_idx] has "ssm_state" key:                │    │
+│  │       → GDN层，提取SSM状态                                           │    │
+│  │   elif past_key_values[layer_idx] has "key" and "value" keys:       │    │
+│  │       → GQA层，提取KV Cache                                          │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+**3.3.2 推理引擎状态结构差异**
+
+| 推理引擎 | GDN层状态结构 | GQA层状态结构 |
+|----------|---------------|---------------|
+| **vLLM** | `MambaCache` 对象，包含 `ssm_states` 和 `conv_states` | `torch.Tensor` [2, batch, num_kv_groups, seq_len, head_dim] |
+| **SGLang** | `MambaState` 对象，字段 `states` 和 `conv_states` | `torch.Tensor` 结构类似vLLM |
+| **TensorRT-LLM** | `MambaConvState` + `MambaSsmState` 分离存储 | `KVCache` tensor |
+
+**关键差异点：**
+
+```python
+# vLLM中的状态结构示例
+class MambaCache:
+    def __init__(self, config, max_batch_size):
+        # GDN层使用这个结构
+        self.ssm_states = torch.zeros(
+            max_batch_size,
+            config.num_hidden_layers,
+            config.num_key_heads,
+            config.head_dim,
+            config.ssm_state_dim  # 256
+        )
+        self.conv_states = torch.zeros(
+            max_batch_size,
+            config.num_hidden_layers,
+            config.num_key_heads,
+            config.conv_kernel_dim  # 4
+        )
+
+# GQA层使用传统结构
+class KVCache:
+    # shape: [2, batch, num_layers, num_kv_groups, seq_len, head_dim]
+    self.key = torch.zeros(...)
+    self.value = torch.zeros(...)
+```
+
+### 3.4 与推理引擎的协同机制
+
+**3.4.1 Prefill阶段协同流程**
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    Prefill阶段：推理引擎 → Mooncake                         │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  ┌───────────────────────────────────────────────────────────────────────┐  │
+│  │ Step 1: 推理引擎完成Prefill                                            │  │
+│  │                                                                        │  │
+│  │ vLLM/SGLang内部状态:                                                   │  │
+│  │   - 已完成prompt的所有token计算                                        │  │
+│  │   - 每层的状态已更新:                                                  │  │
+│  │     * GDN层: ssm_state, conv_state 已递归更新                         │  │
+│  │     * GQA层: key_cache, value_cache 已填充完整序列                    │  │
+│  └───────────────────────────────────────────────────────────────────────┘  │
+│                                  │                                           │
+���                                  ▼                                           │
+│  ┌───────────────────────────────────────────────────────────────────────┐  │
+│  │ Step 2: Mooncake请求状态提取                                           │  │
+│  │                                                                        │  │
+│  │ Qwen35KVConnector.extractFromEngine(engine, request_id):              │  │
+│  │                                                                        │  │
+│  │ // 1. 获取模型配置                                                     │  │
+│  │ config = engine.get_model_config()                                    │  │
+│  │ layer_types = config["layer_types"]                                   │  │
+│  │                                                                        │  │
+│  │ // 2. 遍历每层，按类型提取                                             │  │
+│  │ for layer_idx in range(num_layers):                                   │  │
+│  │     if layer_types[layer_idx] == "linear_attention":                  │  │
+│  │         # 提取GDN层SSM状态                                             │  │
+│  │         ssm_state = engine.get_ssm_state(layer_idx, request_id)       │  │
+│  │         conv_state = engine.get_conv_state(layer_idx, request_id)     │  │
+│  │         ssm_states.append(ssm_state)                                   │  │
+│  │     else:  # "full_attention"                                          │  │
+│  │         # 提取GQA层KV Cache                                            │  │
+│  │         key = engine.get_key_cache(layer_idx, request_id)             │  │
+│  │         value = engine.get_value_cache(layer_idx, request_id)         │  │
+│  │         kv_cache.append((key, value))                                  │  │
+│  └───────────────────────────────────────────────────────────────────────┘  │
+│                                  │                                           │
+│                                  ▼                                           │
+│  ┌───────────────────────────────────────────────────────────────────────┐  │
+│  │ Step 3: 构建元数据并序列化                                             │  │
+│  │                                                                        │  │
+│  │ metadata = Qwen35HybridKVCacheMetadata(                               │  │
+│  │     num_layers=24,                                                     │  │
+│  │     seq_len=seq_len,                                                   │  │
+│  │     layer_type_bitmap=generate_bitmap(layer_types),                   │  │
+│  │     ...                                                                 │  │
+│  │ )                                                                       │  │
+│  │                                                                        │  │
+│  │ store_client.PutQwen35HybridKVCache(                                  │  │
+│  │     request_id, ssm_states, kv_cache, metadata                        │  │
+│  │ )                                                                       │  │
+│  └───────────────────────────────────────────────────────────────────────┘  │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+**3.4.2 Decode阶段协同流程**
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    Decode阶段：Mooncake → 推理引擎                          │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  ┌───────────────────────────────────────────────────────────────────────┐  │
+│  │ Step 1: 从Mooncake获取状态                                             │  │
+│  │                                                                        │  │
+│  │ ssm_states, kv_cache, metadata = store_client.GetQwen35HybridKVCache( │  │
+│  │     request_id                                                         │  │
+│  │ )                                                                       │  │
+│  └───────────────────────────────────────────────────────────────────────┘  │
+│                                  │                                           │
+│                                  ▼                                           │
+│  ┌───────────────────────────────────────────────────────────────────────┐  │
+│  │ Step 2: 按层类型恢复到引擎格式                                          │  │
+│  │                                                                        │  │
+│  │ Qwen35KVConnector.restoreToEngine(engine, request_id, ...):            │  │
+│  │                                                                        │  │
+│  │ ssm_idx = 0                                                            │  │
+│  │ kv_idx = 0                                                              │  │
+│  │                                                                        │  │
+│  │ for layer_idx in range(num_layers):                                   │  │
+│  │     if metadata.getLayerType(layer_idx) == LINEAR_ATTENTION:          │  │
+│  │         # 恢复GDN层SSM状态                                             │  │
+│  │         engine.set_ssm_state(layer_idx, ssm_states[ssm_idx])           │  │
+│  │         engine.set_conv_state(layer_idx, ssm_states[ssm_idx].conv)    │  │
+│  │         ssm_idx += 1                                                    │  │
+│  │     else:  # FULL_ATTENTION                                            │  │
+│  │         # 恢复GQA层KV Cache                                            │  │
+│  │         engine.set_key_cache(layer_idx, kv_cache[kv_idx].key)          │  │
+│  │         engine.set_value_cache(layer_idx, kv_cache[kv_idx].value)      │  │
+│  │         kv_idx += 1                                                     │  │
+│  └───────────────────────────────────────────────────────────────────────┘  │
+│                                  │                                           │
+│                                  ▼                                           │
+│  ┌───────────────────────────────────────────────────────────────────────┐  │
+│  │ Step 3: 推理引擎继续Decode                                             │  │
+│  │                                                                        │  │
+│  │ engine继续生成下一个token:                                             │  │
+│  │   - GDN层: 使用恢复的ssm_state继续递归推理                             │  │
+│  │   - GQA层: 使用恢复的KV Cache进行注意力计算                            │  │
+│  └───────────────────────────────────────────────────────────────────────┘  │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+**3.4.3 与vLLM的具体协同接口**
+
+```python
+# mooncake-integration/vllm/qwen35_kv_connector.py
+
+class Qwen35KVConnector:
+    """
+    vLLM专用连接器：处理Qwen3.5混合注意力模型的状态转换
+    """
+
+    def __init__(self, store_addr: str, model_config_path: str):
+        self.store_client = StoreClient(store_addr)
+        self.config = self._load_model_config(model_config_path)
+        self.layer_types = self.config.get("layer_types", [])
+
+    def extract_from_vllm(
+        self,
+        engine: "LlamaEngine",
+        request_id: str,
+        seq_len: int
+    ) -> Tuple[List[Tensor], List[Tuple[Tensor, Tensor]], dict]:
+        """
+        从vLLM引擎提取混合注意力状态
+
+        Args:
+            engine: vLLM推理引擎实例
+            request_id: 请求唯一标识
+            seq_len: 当前序列长度
+
+        Returns:
+            ssm_states: GDN层的SSM状态列表
+            kv_cache: GQA层的KV Cache列表
+            metadata: 元数据字典
+        """
+        ssm_states = []
+        kv_cache = []
+
+        # 获取vLLM的内部cache管理器
+        cache_engine = engine.cache_engine
+
+        for layer_idx, layer_type in enumerate(self.layer_types):
+            if layer_type == "linear_attention":
+                # 提取GDN层状态
+                # vLLM使用MambaCache存储GDN状态
+                ssm_state = cache_engine.get_ssm_state(layer_idx)
+                conv_state = cache_engine.get_conv_state(layer_idx)
+                ssm_states.append({
+                    "ssm_state": ssm_state,  # [num_heads, head_dim, state_dim]
+                    "conv_state": conv_state  # [num_heads, kernel_dim]
+                })
+            else:  # "full_attention"
+                # 提取GQA层KV Cache
+                # vLLM使用标准KVCache结构
+                key = cache_engine.get_key_cache(layer_idx)
+                value = cache_engine.get_value_cache(layer_idx)
+                kv_cache.append((key, value))
+
+        # 构建元数据
+        metadata = self._build_metadata(seq_len)
+
+        return ssm_states, kv_cache, metadata
+
+    def restore_to_vllm(
+        self,
+        engine: "LlamaEngine",
+        request_id: str,
+        ssm_states: List[dict],
+        kv_cache: List[Tuple[Tensor, Tensor]],
+        metadata: dict
+    ) -> None:
+        """
+        将状态恢复到vLLM引擎
+
+        Args:
+            engine: vLLM推理引擎实例
+            request_id: 请求唯一标识
+            ssm_states: GDN层的SSM状态列表
+            kv_cache: GQA层的KV Cache列表
+            metadata: 元数据字典
+        """
+        cache_engine = engine.cache_engine
+
+        ssm_idx = 0
+        kv_idx = 0
+
+        for layer_idx, layer_type in enumerate(self.layer_types):
+            if layer_type == "linear_attention":
+                # 恢复GDN层状态
+                cache_engine.set_ssm_state(
+                    layer_idx,
+                    ssm_states[ssm_idx]["ssm_state"]
+                )
+                cache_engine.set_conv_state(
+                    layer_idx,
+                    ssm_states[ssm_idx]["conv_state"]
+                )
+                ssm_idx += 1
+            else:  # "full_attention"
+                # 恢复GQA层KV Cache
+                key, value = kv_cache[kv_idx]
+                cache_engine.set_key_cache(layer_idx, key)
+                cache_engine.set_value_cache(layer_idx, value)
+                kv_idx += 1
+
+    def _build_metadata(self, seq_len: int) -> dict:
+        """构建Qwen35专用元数据"""
+        return {
+            "layout_type": KVCacheLayoutType.QWEN35_HYBRID,
+            "num_layers": len(self.layer_types),
+            "seq_len": seq_len,
+            "layer_type_bitmap": self._generate_layer_bitmap(),
+            "full_attention_interval": self.config.get("full_attention_interval", 4),
+            "num_full_attention_layers": sum(1 for t in self.layer_types if t == "full_attention"),
+            "num_linear_attention_layers": sum(1 for t in self.layer_types if t == "linear_attention"),
+            "num_query_heads": self.config.get("num_attention_heads"),
+            "num_kv_groups": self.config.get("num_key_value_heads"),
+            "head_dim": self.config.get("head_dim"),
+            "linear_num_key_heads": self.config.get("linear_num_key_heads", 16),
+            "linear_key_head_dim": self.config.get("linear_key_head_dim", 128),
+            "ssm_state_dim": self.config.get("ssm_state_dim", 256),
+        }
+```
+
+**3.4.4 与SGLang的具体协同接口**
+
+```python
+# mooncake-integration/sglang/qwen35_kv_connector.py
+
+class Qwen35SGLangConnector:
+    """
+    SGLang专用连接器：处理Qwen3.5混合注意力模型的状态转换
+
+    SGLang使用不同的状态管理结构：
+    - GDN状态存储在 model_runner.mamba_states
+    - KV Cache存储在 model_runner.kv_cache
+    """
+
+    def extract_from_sglang(
+        self,
+        model_runner: "ModelRunner",
+        request_id: str,
+        seq_len: int
+    ) -> Tuple[List[dict], List[Tuple[Tensor, Tensor]], dict]:
+        """
+        从SGLang引擎提取混合注意力状态
+
+        SGLang特定逻辑:
+        - SGLang的MambaState结构与vLLM略有不同
+        - 需要处理SGLang的radix attention cache结构
+        """
+        ssm_states = []
+        kv_cache = []
+
+        # SGLang的GDN状态
+        if hasattr(model_runner, 'mamba_states'):
+            for layer_idx, layer_type in enumerate(self.layer_types):
+                if layer_type == "linear_attention":
+                    mamba_state = model_runner.mamba_states[layer_idx]
+                    ssm_states.append({
+                        "ssm_state": mamba_state.states,
+                        "conv_state": mamba_state.conv_states,
+                    })
+
+        # SGLang的KV Cache (可能使用radix attention)
+        if hasattr(model_runner, 'kv_cache'):
+            kv_idx = 0
+            for layer_idx, layer_type in enumerate(self.layer_types):
+                if layer_type == "full_attention":
+                    kv = model_runner.kv_cache[layer_idx]
+                    kv_cache.append((kv.key, kv.value))
+                    kv_idx += 1
+
+        metadata = self._build_metadata(seq_len)
+        return ssm_states, kv_cache, metadata
+```
+
+### 3.5 协同中的关键挑战与解决方案
+
+| 挑战 | 描述 | 解决方案 |
+|------|------|----------|
+| **状态结构不一致** | 不同推理引擎的GDN/KV状态结构略有差异 | 使用Connector抽象层适配不同引擎 |
+| **内存布局差异** | vLLM使用连续tensor，SGLang可能分块存储 | 在extract/restore时进行格式转换 |
+| **序列长度变化** | Decode阶段序列长度动态增长 | metadata中记录seq_len，支持增量更新 |
+| **并发请求管理** | 多请求同时运行，状态隔离 | 使用request_id作为唯一标识 |
+| **状态生命周期** | 需要与引擎的cache生命周期同步 | 实现状态清理回调机制 |
+
 ---
 
 ## 4. 核心组件设计
