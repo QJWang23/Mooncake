@@ -24,7 +24,7 @@
 1. [技术背景与问题分析](#1-技术背景与问题分析)
 2. [系统架构设计](#2-系统架构设计)
 3. [核心组件设计](#3-核心组件设计)
-4. [数据流���计](#4-数据流设计)
+4. [数据流设计](#4-数据流设计)
 5. [API 设计](#5-api-设计)
 6. [测试策略](#6-测试策略)
 7. [实现路线图](#7-实现路线图)
@@ -300,6 +300,11 @@ enum class LayerType : uint8_t {
     FULL_ATTENTION = 1,    // GQA
 };
 
+// SSM状态参数（用于计算大小)
+// 注意： state_dim 是GDN内部状态维度，需要从模型配置获取
+// 典型值: 256 (对应Qwen3.5的state_dim配置)
+static constexpr uint32_t kDefaultSSMStateDim = 256;
+
 // Qwen3.5混合注意力专用元数据
 struct Qwen35HybridKVCacheMetadata {
     // === 基础信息 ===
@@ -339,11 +344,14 @@ struct Qwen35HybridKVCacheMetadata {
     std::vector<uint32_t> getFullAttentionLayerIndices() const;
     std::vector<uint32_t> getLinearAttentionLayerIndices() const;
 };
-
-class Qwen35HybridLayoutHandler : public KVCacheLayoutHandler {
-public:
-    KVCacheLayoutType getType() const override {
-        return KVCacheLayoutType::QWEN35_HYBRID;
+YLT_REFL(Qwen35HybridKVCacheMetadata,
+         layout_type, num_layers, seq_len, max_position_embeddings,
+         full_attention_interval, num_full_attention_layers, num_linear_attention_layers,
+         layer_type_bitmap,
+         num_query_heads, num_kv_groups, head_dim,
+         linear_key_head_dim, linear_value_head_dim,
+         linear_num_key_heads, linear_num_value_heads, linear_conv_kernel_dim,
+         ssm_states_offset, ssm_states_size, kv_cache_offset, kv_cache_size);
     }
 
     size_t calculateSerializedSize(
@@ -379,8 +387,10 @@ public:
         std::vector<Slice>& kv_cache) const;
 
 private:
-    static constexpr uint32_t kMagic = 0x51333548;  // "Q35H"
+    // Magic Number: Qwen3.5 Hybrid (GDN + GQA)
+    // 使用更具体的命名: "Q35H" (Qwen3.5 Hybrid)
     static constexpr uint32_t kVersion = 1;
+    static constexpr uint32_t kHeaderSize = 16;  // 扩展为16字节，与现有12字节对齐，便于添加元数据offset信息
 };
 
 }  // namespace mooncake
@@ -478,10 +488,15 @@ enum class KVCacheLayoutType : int32_t {
     MHA = 1,           // Traditional Multi-Head Attention
     GQA = 2,           // Grouped Query Attention (GLM-4, Qwen2)
     MLA = 3,           // Multi-Head Latent Attention (DeepSeek)
-    HYBRID = 4,        // Sliding Window Hybrid (旧定义，保留兼容)
-    QWEN35_HYBRID = 5, // Qwen3.5 Hybrid Attention (GDN + GQA) [新增]
+    HYBRID = 4,        // Sliding Window Hybrid (通用滑动窗口，用于Qwen2��模型)
+    QWEN35_HYBRID = 5, // Qwen3.5 GDN+GQA Hybrid Attention [新增]
 };
 ```
+
+**设计说明：**
+- `HYBRID = 4`：保留用于通用滑动窗口注意力模式（如Qwen2的sliding window），其元数据为 `HybridKVCacheMetadata`
+- `QWEN35_HYBRID = 5`：新增用于Qwen3.5的Gated DeltaNet + GQA混合模式，其元数据为 `Qwen35HybridKVCacheMetadata`
+- 两者虽然都是"混合"概念，但内部数据结构完全不同，因此需要独立的枚举值和Handler
 
 ### 4.5 建议的新序列化格式
 
@@ -658,11 +673,11 @@ class Qwen35HybridKVStore:
 
 ### 7.3 性能基准测试
 
-| 测试场景 | 序列长度 | 测试要点 |
-|----------|----------|----------|
-| SerializationThroughput | 4K/32K/128K/262K | 序列化吞吐量 |
-| TransferLatency | 128K | 不同传输策略延迟 |
-| MemoryUsage | 256K | 内存使用效率 |
+| 测试���景 | 序列长度 | 测试要点 | 基线比较 |
+|----------|----------|----------|-----------------|
+| SerializationThroughput | 4K/32K/128K/262K | 序列化吞吐量 | 与现有GQA Handler对比 |
+| TransferLatency | 128K | 不同传输策略延迟 | 与传统GQA传输对比 |
+| MemoryUsage | 256K | 内存使用效率 | 与传统GQA内存对比 |
 
 ---
 
@@ -746,6 +761,8 @@ class Qwen35HybridKVStore:
 | mooncake-store/tests/qwen35_hybrid_*.cpp | **新增** |
 | mooncake-wheel/mooncake/qwen35_hybrid.py | **新增** |
 | mooncake-integration/vllm/qwen35_kv_connector.* | **新增** |
+| mooncake-store/src/CMakeLists.txt | 修改 (添加新文件) |
+| mooncake-store/tests/CMakeLists.txt | 修改 (添加测试文件) |
 
 ### 9.3 风险与缓解措施
 
