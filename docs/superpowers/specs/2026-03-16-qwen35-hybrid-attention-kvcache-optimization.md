@@ -66,6 +66,137 @@ LinearAttention(Q, K, V) = φ(Q)(φ(K)^T · V)      // 复杂度 O(L·d²)
 S_t = β_t ⊙ S_{t-1} + Δ_t ⊗ (K_t ⊗ V_t)
 ```
 
+### 1.2.1 GDN 与滑动窗口注意力（Sliding Window Attention）的本质区别
+
+**关键区分：GDN ≠ 滑动窗口注意力**
+
+| 维度 | Gated DeltaNet (GDN) | Sliding Window Attention (SWA) |
+|------|----------------------|-------------------------------|
+| **核心机制** | Delta规��� + 门控状态更新 | 固定窗口大小，丢弃旧token |
+| **记忆保留** | 全局历史压缩到固定状态 | 仅保留窗口内token，窗口外直接丢弃 |
+| **状态大小** | O(1) 固定大小，不随序列增长 | O(W) 窗口大小，固定但需存储窗口内所有KV |
+| **全局上下文** | 通过状态矩阵保留全局信息 | 丢失窗口外所有信息 |
+| **更新方式** | 增量式精确更新（类似"橡皮擦"） | 滑动式FIFO淘汰 |
+| **信息检索** | 通过状态解码检索任意历史 | 无法检索窗口外信息 |
+
+**为什么Qwen3.5选择GDN而非纯SWA：**
+
+```
+滑动窗口注意力的局限：
+┌─────────────────────────────────────────────────────────────────┐
+│  Token序列: [1][2][3]...[W-2][W-1][W]...[N-W]...[N-2][N-1][N]          │
+│                          ↑______窗口内______↑   ↑_丢弃_↑             │
+│                                                                  │
+│  问题：Token 1...N-W 的信息完全丢失，无法进行全局信息检索          │
+└─────────────────────────────────────────────────────────────────┘
+
+Gated DeltaNet的解决方案：
+┌─────────────────────────────────────────────────────────────────┐
+│  Token序列: [1][2][3]...[N-2][N-1][N]                              │
+│                    ↓                                           │
+│              ┌─────────────────────┐                             │
+│              │  压缩状态矩阵 S_t    │  ← 固定大小，包含全局信息    │
+│              │  大小: [H, D, StateDim] │                             │
+│              └─────────────────────┘                             │
+│                                                                  │
+│  优势：所有历史信息压缩保存在状态中，可进行全局检索          │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### 1.2.2 SSM状态张量结构详解
+
+**GDN层的SSM状态包含以下张量组件：**
+
+```cpp
+// 单层SSM状态结构
+struct SSMStateLayer {
+    // === 权重张量（从模型加载，固定不变）===
+    const float* A_log;           // 状态转移矩阵 [num_key_heads, head_dim]
+                                 // 存储为对数形式: A = -exp(A_log) 保证数值稳定性
+    const float* dt_proj_weight;  // 门控投影权重 [num_key_heads, hidden_dim]
+    const float* dt_proj_bias;     // 门控投影偏置 [num_key_heads]
+    const float* conv1d_weight;    // 1D卷积权重 [num_key_heads, 1, kernel_dim]
+                                 // kernel_dim通常为4，用于局部依赖捕获
+    const float* D_proj;           // 跳跃连接权重 [num_key_heads]
+
+    // === 运行时状态（随序列动态更新）===
+    float* ssm_state;              // SSM核心状态 [num_key_heads, head_dim, state_dim]
+                                 // state_dim = 256 (典型值)
+                                 // 这是"压缩的全局历史"
+    float* conv_state;             // 卷积状态 [num_key_heads, kernel_dim]
+                                 // 用于缓存卷积计算的中间结果
+};
+```
+
+**各张量的作用说明：**
+
+| 张量 | 形状 | 作用 | 存储需求 |
+|------|------|------|----------|
+| `A_log` | [H, D] | 状态转移矩阵，控制信息保留/遗忘 | 固定，随模型加载 |
+| `dt_proj_weight` | [H, hidden_dim] | 生成时间步相关的门控参数 | 固定 |
+| `dt_proj_bias` | [H] | 门控偏置 | 固定 |
+| `conv1d_weight` | [H, 1, 4] | 局部依赖捕获（类似n-gram） | 固定 |
+| `D_proj` | [H] | 跳跃连接，增强梯度流 | 固定 |
+| `ssm_state` | [H, D, 256] | **核心状态**，压缩的全局历史 | **需存储** |
+| `conv_state` | [H, 4] | 卷积缓存 | **需存储** |
+
+**单层SSM状态大小计算：**
+```
+单层大小 = ssm_state + conv_state
+         = H × D × state_dim × 4 + H × kernel_dim × 4
+         = 16 × 128 × 256 × 4 + 16 × 4 × 4
+         = 2,097,152 + 256
+         ≈ 2MB per layer
+
+18层GDN总状态大小 ≈ 18 × 2MB = 36MB (固定，不随序列长度变化)
+```
+
+### 1.2.3 Delta规则的核心原理
+
+**传统线性注意力的问题：**
+```
+传统更新: S_t = S_{t-1} + K_t ⊗ V_t  // 简单累加
+
+问题：
+- 信息不断叠加，无法"擦除"过时内容
+- 状态膨胀，信噪比下降
+- 类似于"只写入不删除"的内存泄漏
+```
+
+**Delta规则的解决方案：**
+```
+Delta更新: S_t = S_{t-1} - Δ_pred ⊗ K_pred + Δ_new ⊗ K_new
+
+核心思想：
+1. 先"预测"要更新的位置 (K_pred)
+2. 计算需要"擦除"的内容 (Δ_pred)
+3. 添加新内容 (Δ_new ⊗ K_new)
+
+类比：
+┌─────────────────────────────────────────────────────────────────┐
+│  传统线性注意力: 像在黑板上不断写新内容，从不擦除          │
+│                     ↓                                           │
+│  [内容1][内容2][内容3]...[内容N]  ← 信息混杂，难以检索        │
+│                                                                  │
+│  Delta规则: 像使用橡皮擦精确擦除旧内容后再写新内容          │
+│                     ↓                                           │
+│  [精确更新的内容]  ← 信息清晰，易于检索                       │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**门控机制 (Gating) 的作用：**
+```cpp
+// 门控参数 β 控制记忆保留比例
+β_t = σ(dt_proj(x_t))  // σ为sigmoid，β ∈ (0, 1)
+
+// 状态更新
+S_t = β_t ⊙ S_{t-1} + (1 - β_t) ⊙ Δ_t
+
+// 作用：
+// - β_t → 1: 保留历史，新信息影响小（处理已知模式）
+// - β_t → 0: 快速遗忘，接受新信息（处理新模式）
+```
+
 ### 1.3 层级配置策略（3:1混合比例）
 
 ```
@@ -228,6 +359,224 @@ Qwen3.5 混合注意力 KVCache 结构：
 |----------|---------|----------|------|-------------|
 | 传统GQA（24层） | 0 | ~12GB | 12GB | 100% |
 | **Qwen3.5混合** | ~36MB | ~3GB | ~3.04GB | **25%** |
+
+### 2.4 层索引映射与张量结构
+
+#### 2.4.1 层索引映射关系
+
+**物理层索引到逻辑组件的映射：**
+
+```
+24层模型示例（full_attention_interval = 4）：
+
+物理层索引    层类型          逻���组件索引
+───────────────────────────────────────────
+Layer 0      LINEAR_ATTENTION   → SSM State[0]
+Layer 1      LINEAR_ATTENTION   → SSM State[1]
+Layer 2      LINEAR_ATTENTION   → SSM State[2]
+Layer 3      FULL_ATTENTION     → KV Cache[0] (K[0], V[0])
+Layer 4      LINEAR_ATTENTION   → SSM State[3]
+Layer 5      LINEAR_ATTENTION   → SSM State[4]
+Layer 6      LINEAR_ATTENTION   → SSM State[5]
+Layer 7      FULL_ATTENTION     → KV Cache[1] (K[1], V[1])
+Layer 8      LINEAR_ATTENTION   → SSM State[6]
+Layer 9      LINEAR_ATTENTION   → SSM State[7]
+Layer 10     LINEAR_ATTENTION   → SSM State[8]
+Layer 11     FULL_ATTENTION     → KV Cache[2] (K[2], V[2])
+Layer 12     LINEAR_ATTENTION   → SSM State[9]
+Layer 13     LINEAR_ATTENTION   → SSM State[10]
+Layer 14     LINEAR_ATTENTION   → SSM State[11]
+Layer 15     FULL_ATTENTION     → KV Cache[3] (K[3], V[3])
+Layer 16     LINEAR_ATTENTION   → SSM State[12]
+Layer 17     LINEAR_ATTENTION   → SSM State[13]
+Layer 18     LINEAR_ATTENTION   → SSM State[14]
+Layer 19     FULL_ATTENTION     → KV Cache[4] (K[4], V[4])
+Layer 20     LINEAR_ATTENTION   → SSM State[15]
+Layer 21     LINEAR_ATTENTION   → SSM State[16]
+Layer 22     LINEAR_ATTENTION   → SSM State[17]
+Layer 23     FULL_ATTENTION     → KV Cache[5] (K[5], V[5])
+```
+
+**索引计算公式：**
+
+```cpp
+// 从物理层索引获取层类型
+LayerType getLayerType(uint32_t physical_layer_idx, uint32_t interval) {
+    return ((physical_layer_idx + 1) % interval == 0)
+        ? LayerType::FULL_ATTENTION
+        : LayerType::LINEAR_ATTENTION;
+}
+
+// 从物理层索引获取SSM逻辑索引
+uint32_t toSSMIndex(uint32_t physical_layer_idx, uint32_t interval) {
+    uint32_t full_count = (physical_layer_idx + 1) / interval;
+    return physical_layer_idx - full_count;
+}
+
+// 从物理层索引获取KV逻辑索引
+uint32_t toKVIndex(uint32_t physical_layer_idx, uint32_t interval) {
+    return (physical_layer_idx + 1) / interval - 1;
+}
+
+// 从KV逻辑索引获取物理层索引
+uint32_t toPhysicalLayerIndex(uint32_t kv_idx, uint32_t interval) {
+    return kv_idx * interval + (interval - 1);
+}
+```
+
+#### 2.4.2 KV张量详细结构
+
+**GQA完整注意力层的KV张量布局：**
+
+```
+单个GQA层的KV Cache张量结构：
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                            K Cache张量                                        │
+│  Shape: [num_kv_groups, seq_len, head_dim]                                  │
+│                                                                              │
+│  ┌─────────────────────────────────────────────────────────────────────────┐│
+│  │ KV_Group 0                                                               ││
+│  │   [Token 0]: [d_0, d_1, d_2, ..., d_{head_dim-1}]                       ││
+│  │   [Token 1]: [d_0, d_1, d_2, ..., d_{head_dim-1}]                       ││
+│  │   ...                                                                    ││
+│  │   [Token seq_len-1]: [d_0, d_1, ..., d_{head_dim-1}]                    ││
+│  ├─────────────────────────────────────────────────────────────────────────┤│
+│  │ KV_Group 1                                                               ││
+│  │   ... (同上)                                                             ││
+│  ├─────────────────────────────────────────────────────────────────────────┤│
+│  │ ...                                                                      ││
+│  │ KV_Group {num_kv_groups-1}                                               ││
+│  │   ... (同上)                                                             ││
+│  └─────────────────────────────────────────────────────────────────────────┘│
+│                                                                              │
+│  内存布局（C顺序）:                                                          │
+│  [G0_T0][G0_T1]...[G0_T{S-1}][G1_T0]...[G{G-1}_T{S-1}]                   │
+│                                                                              │
+│  大小 = num_kv_groups × seq_len × head_dim × sizeof(float)                  │
+│       = 4 × 128K × 128 × 4B = 256MB per layer (K or V)                      │
+│       = 512MB per layer (K + V)                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+**GDN线性注意力层的SSM状态张量布局：**
+
+```
+单个GDN层的SSM状态张量结构：
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         SSM State张量                                        │
+│  Shape: [num_key_heads, head_dim, state_dim]                                │
+│                                                                              │
+│  ���─────────────────────────────────────────────────────────────────────────┐│
+│  │ Key_Head 0                                                               ││
+│  │   [d_0]: [s_0, s_1, ..., s_{state_dim-1}]    ← 压缩的历史状态           ││
+│  │   [d_1]: [s_0, s_1, ..., s_{state_dim-1}]                               ││
+│  │   ...                                                                    ││
+│  │   [d_{head_dim-1}]: [s_0, ..., s_{state_dim-1}]                         ││
+│  ├─────────────────────────────────────────────────────────────────────────┤│
+│  │ Key_Head 1                                                               ││
+│  │   ... (同上)                                                             ││
+│  ├─────────────────────────────────────────────────────────────────────────┤│
+│  │ ...                                                                      ││
+│  │ Key_Head {num_key_heads-1}                                               ││
+│  │   ... (同上)                                                             ││
+│  └─────────────────────────────────────────────────────────────────────────┘│
+│                                                                              │
+│  内存布局（C顺序）:                                                          │
+│  [H0_D0_S0...S255][H0_D1_S0...S255]...[H{15}_D{127}_S0...S255]            │
+│                                                                              │
+│  大小 = num_key_heads × head_dim × state_dim × sizeof(float)                │
+│       = 16 × 128 × 256 × 4B = 2MB per layer (固定，不随序列长度变化)        │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### 2.4.3 存储序列化格式
+
+**混合布局的完整序列化格式：**
+
+```
+序列化字节流布局：
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ Offset    │ Size      │ Content                                            │
+├───────────┼───────────┼────────────────────────────────────────────────────┤
+│ 0x0000    │ 16 B      │ SerializedHeader                                   │
+│           │           │   - magic: 0x51333548 ("Q35H")                     │
+│           │           │   - version: 1                                     │
+│           │           │   - metadata_json_length                           │
+│           │           │   - reserved (future use)                          │
+├───────────┼───────────┼────────────────────────────────────────────────────┤
+│ 0x0010    │ ~2KB      │ Metadata JSON                                      │
+│           │           │   {                                                │
+│           │           │     "layout_type": 5,                              │
+│           │           │     "num_layers": 24,                              │
+│           │           │     "seq_len": 131072,                             │
+│           │           │     "layer_type_bitmap": [0x77, 0xDD, 0xEE],        │
+│           │           │     "num_kv_groups": 4,                             │
+│           │           │     "head_dim": 128,                                │
+│           │           │     "ssm_states_offset": 0x1000,                    │
+│           │           │     "ssm_states_size": 37748736,                    │
+│           │           │     "kv_cache_offset": 0x266D000,                   │
+│           │           │     "kv_cache_size": 3221225472,                    │
+│           │           │     ...                                              │
+│           │           │   }                                                 │
+├───────────┼───────────┼────────────────────────────────────────────────────┤
+│ ssm_offset │ ~36MB     │ Part A: SSM States (按物理层顺序)                   │
+│           │           │   ┌─────────────────────────────────────────────┐  │
+│           │           │   │ SSM State for Layer 0 (~2MB)                │  │
+│           │           │   │   - ssm_state: [16, 128, 256]               │  │
+│           │           │   │   - conv_state: [16, 4]                      │  │
+│           │           │   ├─────────────────────────────────────────────┤  │
+│           │           │   │ SSM State for Layer 1 (~2MB)                │  │
+│           │           │   │ ...                                          │  │
+│           │           │   │ (共18个GDN层的SSM状态)                        │  │
+│           │           │   └─────────────────────────────────────────────┘  │
+├───────────┼───────────┼────────────────────────────────────────────────────┤
+│ kv_offset  │ ~3GB      │ Part B: KV Cache (按物理层顺序)                    │
+│           │           │   ┌─────────────────────────────────────────────┐  │
+│           │           │   │ KV Cache for Layer 3 (~512MB)               │  │
+│           │           │   │   - K: [4, 131072, 128] (~256MB)            │  │
+│           │           │   │   - V: [4, 131072, 128] (~256MB)            │  │
+│           │           │   ├─────────────────────────────────────────────┤  │
+│           │           │   │ KV Cache for Layer 7 (~512MB)               │  │
+│           │           │   │ ...                                          │  │
+│           │           │   │ (共6个GQA层的KV Cache)                        │  │
+│           │           │   └─────────────────────────────────────────────┘  │
+└───────────┴───────────┴────────────────────────────────────────────────────┘
+```
+
+**关键偏移量计算：**
+
+```cpp
+// 计算SSM状态偏移量
+uint64_t calculateSSMStatesOffset(size_t header_size, size_t json_size) {
+    // 对齐到4KB边界，优化RDMA传输
+    return ((header_size + json_size + 4095) / 4096) * 4096;
+}
+
+// 计算KV Cache偏移量
+uint64_t calculateKVCacheOffset(uint64_t ssm_offset, size_t ssm_size) {
+    // 对齐到4KB边界
+    return ((ssm_offset + ssm_size + 4095) / 4096) * 4096;
+}
+
+// 计算单层SSM状态在序列化流中的偏移
+uint64_t getLayerSSMOffset(uint32_t physical_layer_idx,
+                           uint64_t ssm_base_offset,
+                           size_t single_ssm_size) {
+    uint32_t ssm_idx = toSSMIndex(physical_layer_idx, interval);
+    return ssm_base_offset + ssm_idx * single_ssm_size;
+}
+
+// 计算单层KV Cache在序列化流中的偏移
+uint64_t getLayerKVOffset(uint32_t physical_layer_idx,
+                          uint64_t kv_base_offset,
+                          size_t single_kv_size) {
+    uint32_t kv_idx = toKVIndex(physical_layer_idx, interval);
+    return kv_base_offset + kv_idx * single_kv_size;
+}
+```
 
 ---
 
