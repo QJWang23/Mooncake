@@ -352,7 +352,6 @@ YLT_REFL(Qwen35HybridKVCacheMetadata,
          linear_key_head_dim, linear_value_head_dim,
          linear_num_key_heads, linear_num_value_heads, linear_conv_kernel_dim,
          ssm_states_offset, ssm_states_size, kv_cache_offset, kv_cache_size);
-    }
 
     size_t calculateSerializedSize(
         const std::vector<Slice>& kv_data,
@@ -604,7 +603,26 @@ public:
 };
 ```
 
-### 6.2 Integration API (vLLM/SGLang对接)
+### 6.2 Error Handling Specification
+
+```cpp
+// Qwen3.5 专用错误码扩展
+enum class Qwen35ErrorCode : int32_t {
+    QWEN35_OK = 0,
+    QWEN35_INVALID_LAYER_CONFIGURATION = 2,
+    QWEN35_SSM_STATE_SIZE_MISMATCH = 3,
+    QWEN35_KV_CACHE_SIZE_MISMATCH = 4,
+    QWEN35_INVALID_LAYER_INDEX = 5,
+    QWEN35_METADATA_VALIDATION_FAILED = 6,
+    QWEN35_SERIALIZATION_FAILED = 7,
+    QWEN35_DESERIALIZATION_FAILED = 8,
+    QWEN35_UNSUPPORTED_LAYER_TYPE = 9,
+    QWEN35_BUFFER_OVERFLOW = 10,
+    QWEN35_PARTIAL_TRANSFER_FAILED = 11,
+};
+```
+
+### 6.3 Integration API (vLLM/SGLang对接)
 
 ```cpp
 class Qwen35KVConnector {
