@@ -1,0 +1,105 @@
+@startuml Mooncake Architecture Overview
+!theme plain
+skinparam backgroundColor #FEFEFE
+skinparam defaultFontSize 11
+skinparam defaultFontName Helvetica
+skinparam componentStyle rectangle
+skinparam padding 6
+skinparam roundCorner 10
+
+title Mooncake: KVCache-Centric Disaggregated LLM Serving Architecture
+
+' ── LLM Inference Engines ──
+package "LLM Inference Engines" as ENGINES #E8F5E9 {
+    component [vLLM\nKV Connector] as vLLM
+    component [SGLang\nHiCache] as SGLang
+    component [TensorRT-LLM] as TRT
+    component [LMCache] as LMC
+    component [LMDeploy] as LMD
+}
+
+' ── Mooncake Store ──
+package "Mooncake Store" as STORE #E3F2FD {
+    component [Master Service\n─────────────\n• Object Space Mgmt\n• Replica Coordination\n• Metadata (etcd/Redis)\n• HA (in progress)] as MASTER #BBDEFB
+
+    component [Store Client\n─────────────\n• Put / Get / Remove\n• Multi-replica\n• Lease Protection\n• Soft Pin] as CLIENT #BBDEFB
+
+    database "Memory Tiers" as TIERS {
+        card "L1: GPU VRAM" as L1 #FFCDD2
+        card "L2: CPU DRAM" as L2 #FFF9C4
+        card "L3: SSD / NVMe-oF" as L3 #C8E6C9
+    }
+}
+
+' ── Transfer Engine ──
+package "Mooncake Transfer Engine" as TE #FFF3E0 {
+    component [Transport Abstraction\n─────────────\n• Segment (unified address space)\n• BatchTransfer (scatter/gather)\n• Topology-aware Path Selection\n• Multi-NIC Aggregation] as TRANSPORT #FFE0B2
+
+    package "Transport Backends" as BACKENDS #FFE0B2 {
+        component [RDMA\nIB/RoCEv2/\neRDMA/GPU\nDirect] as RDMA
+        component [NVLink\nIntra-node\nGPU-GPU] as NVL
+        component [Ascend Direct\nHIXL/ADXL\nNPU-NPU] as ASCEND
+        component [HIP\nAMD ROCm\nGPU] as HIP
+        component [CXL /\nShared Mem] as CXL
+        component [NVMe-oF\nSSD Fabric] as NVME
+        component [UB/URMA\nLingqu\n(RFC #1773)] as UB #E1BEE7
+    }
+}
+
+' ── Hardware Layer ──
+package "Hardware Platforms" as HW #F3E5F5 {
+    card "NVIDIA GPU\n(H100/H20/A10)" as NVIDIA #CE93D8
+    card "Ascend NPU\n910C(A3)/950DT(A5)" as ASCENDHW #CE93D8
+    card "AMD GPU\n(ROCm)" as AMD #CE93D8
+    card "MTHREADS\n(MUSA)" as MTHREADS #CE93D8
+    card "Kunpeng CPU\n+ UB Fabric" as KUNPENG #CE93D8
+}
+
+' ── Cloud-Native ──
+package "Cloud-Native Distribution" as CN #E0F7FA {
+    component [InferNex / xPyD\n─────────────\n• K8s-native scheduling\n• DRA device management\n• Elastic autoscaling\n• Near real-time observability] as INFERNEX #B2EBF2
+}
+
+' ── Relationships ──
+ENGINES -down-> CLIENT : KVCache\nPut/Get
+CLIENT -down-> MASTER : Metadata\nRegistration
+CLIENT -down-> L1 : Device Memory
+CLIENT -down-> L2 : Host Memory
+CLIENT -down-> L3 : Persistent Storage
+
+CLIENT -right-> TRANSPORT : Zero-copy\nTransfer
+TRANSPORT -down-> BACKENDS
+
+RDMA -down-> NVIDIA
+NVL -down-> NVIDIA
+ASCEND -down-> ASCENDHW
+HIP -down-> AMD
+UB -down-> KUNPENG
+NVME -down-> L3
+CXL -down-> NVIDIA
+
+MASTER .right. INFERNEX : K8s\nDeployment
+INFERNEX .down. ASCENDHW : NPU Operator
+
+note right of MASTER
+  **HA Architecture Evolution**
+  Active community effort to eliminate
+  single-point-of-failure via multi-Master
+  failover and metadata replication.
+end note
+
+note right of UB
+  **Emerging Backend**
+  RFC #1773: UB Transport via
+  Kunpeng UMDK URMA API
+  Target: 400 Gbps saturation
+end note
+
+note bottom of ASCENDHW
+  **Ascend A5 (950DT)**
+  144 GB HBM / 4 TB/s BW
+  8192 cards / 16.3 PB/s cluster
+  Lingqu UB full peer-to-peer
+end note
+
+@enduml
