@@ -31,6 +31,19 @@
 3. **企业级场景性能加速**：多轮对话场景TTFT降低30%+，Coding Agent场景KVCache复用率提升50%+
 4. **上游社区贡献**：将核心优化回馈Mooncake上游社区，建立技术影响力
 
+### 1.3 TO BE关键技术总结
+
+| # | 关键技术 | 核心说明 |
+|---|---------|---------|
+| 1 | **五级Tiered-Cache** | 在现有DRAM+SSD二级存储之上，新增L0(NPU HBM)、L1(灵衢HBM池，GVA统一编址超节点共享)、L2(Host DRAM)三层，将缓存命中率从60-70%提升至>90% |
+| 2 | **灵衢HCCP设备直连** | 利用A3/A5灵衢UB交换机HCCP协议实现超节点内NPU-to-NPU亚微秒直传，绕过Host DRAM中转，将Store模式4跳简化为L0↔L1的2跳 |
+| 3 | **Dual-Path智能传输** | 基于HCCP/HCOM/RDMA三协议栈构建运行时自适应路径选择器，大块传输(>64MB)时HCCP+RDMA双路径并发聚合带宽，替代现有静态协议选择 |
+| 4 | **GVA 256TB统一编址** | 通过MemFabric Hybrid BM API实现跨节点内存Import/Export，消除多次地址转换开销，NPU可通过GVA直接访问远端HBM/DRAM |
+| 5 | **场景感知缓存策略** | 多轮对话场景采用L1 Soft Pin + HCCP异步预取将TTFT降低30%，Coding Agent场景采用L1 System Prompt永久Pin + ContextGroup跨Agent共享将复用率从40%提升至>80% |
+| 6 | **DataCopier层间迁移引擎** | 基于访问热度评分的L0-L4异步迁移引擎，Miss事件触发升级、定期扫描触发降级、显式Pin/Unpin API控制，迁移过程不阻塞推理 |
+
+> 架构图详见：[AS IS痛点图](../assets/asis-architecture-pain-points.svg) | [TO BE总体架构图](../assets/tobe-architecture-solution.svg) | [Tiered-Cache数据流图](../assets/tiered-cache-dataflow.svg)
+
 ---
 
 ## 二、AS IS：当前架构与技术现状
