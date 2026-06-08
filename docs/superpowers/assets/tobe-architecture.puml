@@ -1,0 +1,114 @@
+@startuml tobe-architecture-solution
+!define RECTANGLE class
+
+skinparam backgroundColor #FEFEFE
+skinparam componentStyle rectangle
+skinparam arrowColor #666666
+skinparam componentBackgroundColor #E8E8E8
+skinparam packageBackgroundColor #F5F5F5
+
+title **TO BE: Mooncake KVCache优化架构总体视图**
+
+' 应用层
+package "应用层 (推理框架集成)" as app_layer #E3F2FD {
+    rectangle "vLLM\nKV Connector" as vllm #BBDEFB
+    rectangle "SGLang\nHiCache Backend" as sglang #BBDEFB
+    rectangle "自研推理引擎" as custom #BBDEFB
+}
+
+' API层
+package "Mooncake Store API层" as api_layer #E8F5E9 {
+    rectangle "Put/Get/Remove\n标准API" as std_api #C8E6C9
+    rectangle "GVA-aware\n扩展API" as gva_api #C8E6C9
+    rectangle "SessionPin/\nContextGroup\n场景感知" as scene_api #C8E6C9
+}
+
+app_layer -[#2196F3]-> api_layer : <size:11>推理框架调用</size>
+
+' Tiered-Cache核心
+package "Tiered-Cache数据平面" as cache_layer {
+    rectangle "L0: NPU HBM\n<100ns\n32-64GB/NPU" as L0 #4CAF50
+    rectangle "L1: 灵衢HBM池\n<1μs\n256GB-1TB\n(超节点共享)" as L1 #8BC34A
+    rectangle "L2: Host DRAM\n1-2μs\n512GB-2TB" as L2 #CDDC39
+    rectangle "L3: 分布式Store\n5-50μs\nPB级" as L3 #FFC107
+    rectangle "L4: SSD持久化\n100-500μs\nPB级" as L4 #9E9E9E
+
+    L0 -[#4CAF50,thickness=2]-> L1 : <size:11>**HCCP**\n<1μs</size>
+    L1 -[#8BC34A,thickness=2]-> L2 : <size:11>**PCIe DMA**\n1-2μs</size>
+    L2 -[#CDDC39,thickness=2]-> L3 : <size:11>**RDMA**\n5-50μs</size>
+    L3 -[#FFC107,thickness=2]-> L4 : <size:11>**NVMe/DFS**\n100-500μs</size>
+
+    note right of L1
+        <size:11><b><color:green>L1灵衢HBM池</color></b></size>
+        ----
+        <color:green>• GVA统一编址</color>
+        <color:green>• 超节点内共享</color>
+        <color:green>• 设备直连访问</color>
+        <color:green>→ Store 4跳变2跳</color>
+    end note
+}
+
+api_layer -[#4CAF50]-> cache_layer : <size:11>TieredBackend分配</size>
+
+' Dual-Path传输引擎
+package "Dual-Path传输引擎" as transport_layer #E1F5FE {
+    rectangle "灵衢HCCP\n设备直连\n<1μs/>100GB/s" as hccp #03A9F4
+    rectangle "灵衢HCOM\n主机RoCE\n~2μs/~80GB/s" as hcom #03A9F4
+    rectangle "传统RDMA\n跨超节点\n~10μs/~50GB/s" as rdma #03A9F4
+    rectangle "TCP\n兼容回退" as tcp #03A9F4
+
+    rectangle "智能路径选择器\n(拓扑/大小/延迟自适应)" as selector #29B6F6
+
+    hccp -[#03A9F4]-> selector
+    hcom -[#03A9F4]-> selector
+    rdma -[#03A9F4]-> selector
+    tcp -[#03A9F4]-> selector
+
+    note right of selector
+        <size:11><b><color:blue>Dual-Path并发</color></b></size>
+        ----
+        <color:blue>大块传输(>64MB):</color>
+        <color:blue>HCCP + RDMA并发</color>
+        <color:blue>带宽聚合</color>
+        ----
+        <color:blue>→ 静态路径变自适应</color>
+    end note
+}
+
+cache_layer -[#03A9F4]-> transport_layer : <size:11>DataCopier传输</size>
+
+' GVA层
+package "GVA统一编址管理层" as gva_layer #F3E5F5 {
+    rectangle "256TB全局地址空间" as gva_space #CE93D8
+    rectangle "ImportMemory\n远程内存导入" as gva_import #CE93D8
+    rectangle "GVA↔LVA转换" as gva_convert #CE93D8
+    rectangle "2MB大页对齐" as gva_align #CE93D8
+
+    note bottom of gva_layer
+        <size:11><color:#9C27B0>消除地址转换开销</color></size>
+        <size:11><color:#9C27B0>跨节点透明访问</color></size>
+    end note
+}
+
+transport_layer -[#9C27B0]-> gva_layer : <size:11>GVA地址操作</size>
+
+' 硬件层
+package "硬件平台层" as hw_layer #ECEFF1 {
+    rectangle "A2\nHCCS + RDMA" as a2 #B0BEC5
+    rectangle "A3/A5\n灵衢UB(HCCP/HCOM) + RDMA" as a3a5 #B0BEC5
+}
+
+gva_layer -[#607D8B]-> hw_layer : <size:11>硬件接口</size>
+
+' 痛点解决标注
+legend bottom right
+    <size:14><b><color:green>AS IS痛点 → TO BE解决</color></b></size>
+    |= 痛点 |= 解决方案 |= 效果 |
+    | Store 4跳 | L0↔L1 HCCP直传 | <color:green>2跳, <2μs</color> |
+    | 缓存2层 | L0-L4五级 | <color:green>命中率+20-30%</color> |
+    | 静态路径 | 智能选择器 | <color:green>自适应+并发</color> |
+    | 地址转换 | GVA统一编址 | <color:green>零转换开销</color> |
+    | P2P RoCE | 灵衢HCCP | <color:green><1μs, >100GB/s</color> |
+endlegend
+
+@enduml

@@ -1,0 +1,102 @@
+@startuml tiered-cache-dataflow
+!define RECTANGLE class
+
+skinparam backgroundColor #FEFEFE
+skinparam componentStyle rectangle
+skinparam arrowColor #666666
+skinparam componentBackgroundColor #E8E8E8
+skinparam packageBackgroundColor #F5F5F5
+
+title **Tiered-Cache L0-L4 数据流与场景策略详图**
+
+' 五级缓存层次 - 纵向排列
+rectangle "L0: NPU HBM\n推理实例私有 | <100ns | 32-64GB/NPU" as L0 #4CAF50
+rectangle "L1: 灵衢HBM池\n超节点共享 | <1μs | 256GB-1TB\n(GVA统一编址)" as L1 #8BC34A
+rectangle "L2: Host DRAM\n节点内共享 | 1-2μs | 512GB-2TB" as L2 #CDDC39
+rectangle "L3: 分布式Store池\n集群共享 | 5-50μs | PB级\n(Mooncake Store)" as L3 #FFC107
+rectangle "L4: SSD持久化\n长期存储 | 100-500μs | PB级\n(NVMe/DFS)" as L4 #9E9E9E
+
+' 层间传输技术标注
+L0 -[#4CAF50,thickness=2]- L1 : <size:11>**灵衢HCCP / PCIe DMA**\n<1μs / 1-2μs</size>
+L1 -[#8BC34A,thickness=2]- L2 : <size:11>**PCIe DMA / GVA Import**\n1-2μs</size>
+L2 -[#CDDC39,thickness=2]- L3 : <size:11>**RoCE / RDMA**\n5-50μs</size>
+L3 -[#FFC107,thickness=2]- L4 : <size:11>**NVMe-oF / DFS异步写**\n100-500μs</size>
+
+' 多轮对话场景
+package "路径A: 多轮对话热数据流" as dialog_flow #E3F2FD {
+    usecase "对话Round N\nPrefill KVCache" as uc_round
+    usecase "Soft Pin\n保存到L1" as uc_pin
+    usecase "Round N+1\nHCCP预取到L0" as uc_prefetch
+    usecase "对话结束\n降级到L2/L3" as uc_downgrade
+
+    uc_round -[#2196F3,thickness=2]-> uc_pin : <size:11><color:#1565C0>L0 → L1</color></size>
+    uc_pin -[#2196F3,thickness=2]-> uc_prefetch : <size:11><color:#1565C0>L1 → L0</color></size>
+    uc_pin -[#2196F3,dashed,thickness=1]-> uc_downgrade : <size:11><color:#1565C0>L1 → L2/L3</color></size>
+
+    note right of dialog_flow
+        <size:11><b><color:#1565C0>多轮对话策略</color></b></size>
+        ----
+        <color:#1565C0>• 历史KVCache Soft Pin在L1</color>
+        <color:#1565C0>• 异步预取下轮KVCache到L0</color>
+        <color:#1565C0>• 对话结束降级等待复用</color>
+        <color:#1565C0>• TTFT降低30%+</color>
+    end note
+}
+
+' Coding Agent场景
+package "路径B: Coding Agent上下文流" as agent_flow #E8F5E9 {
+    usecase "当前文件\nKVCache在L0" as uc_file
+    usecase "System Prompt\n永久Pin L1" as uc_sys
+    usecase "代码上下文\nL0↔L1按文件切换" as uc_ctx
+    usecase "跨任务复用\nContextGroup共享" as uc_reuse
+    usecase "长期不用\n持久化到L3/L4" as uc_persist
+
+    uc_file -[#4CAF50,thickness=2]-> uc_ctx : <size:11><color:#2E7D32>L0 ↔ L1</color></size>
+    uc_sys -[#4CAF50,dashed,thickness=2]-> uc_ctx : <size:11><color:#2E7D32>Pin在L1</color></size>
+    uc_ctx -[#4CAF50,thickness=1]-> uc_reuse : <size:11><color:#2E7D32>L1/L2共享</color></size>
+    uc_reuse -[#4CAF50,dashed,thickness=1]-> uc_persist : <size:11><color:#2E7D32>L3/L4</color></size>
+
+    note right of agent_flow
+        <size:11><b><color:#2E7D32>Coding Agent策略</color></b></size>
+        ----
+        <color:#2E7D32>• System Prompt永久Pin在L1</color>
+        <color:#2E7D32>• 代码上下文按文件粒度管理</color>
+        <color:#2E7D32>• 跨Agent ContextGroup共享</color>
+        <color:#2E7D32>• 复用率40%→80%+</color>
+    end note
+}
+
+' DataCopier迁移引擎
+package "层间迁移引擎 (DataCopier)" as copier #FFF3E0 {
+    rectangle "访问频率\n热度评分" as heat #FFB74D
+    rectangle "迁移决策\n层级选择" as decision #FFB74D
+    rectangle "异步执行\n不阻塞推理" as async_exec #FFB74D
+
+    heat -[#F57C00]-> decision : <size:11>评分输入</size>
+    decision -[#F57C00]-> async_exec : <size:11>迁移指令</size>
+
+    note bottom of copier
+        <size:11><b><color:#E65100>迁移策略</color></b></size>
+        ----
+        <color:#E65100>• Miss事件触发升级</color>
+        <color:#E65100>• 定期扫描触发降级</color>
+        <color:#E65100>• 显式Pin/Unpin API</color>
+        <color:#E65100>• 异步迁移不阻塞</color>
+    end note
+}
+
+L0 -[#2196F3,thickness=1]-> dialog_flow
+L1 -[#4CAF50,thickness=1]-> agent_flow
+L1 -[#F57C00,dashed,thickness=1]-> copier
+L2 -[#F57C00,dashed,thickness=1]-> copier
+
+legend bottom
+    <size:14><b>数据流图例</b></size>
+    |= 颜色 |= 含义 |
+    | <color:#4CAF50>绿色</color> | 缓存层次 (热→冷) |
+    | <color:#2196F3>蓝色</color> | 多轮对话数据流 |
+    | <color:#4CAF50>深绿</color> | Coding Agent数据流 |
+    | <color:#F57C00>橙色</color> | DataCopier迁移引擎 |
+endlegend
+
+@enduml

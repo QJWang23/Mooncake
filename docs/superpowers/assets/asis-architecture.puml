@@ -1,0 +1,77 @@
+@startuml asis-architecture-pain-points
+!define RECTANGLE class
+
+skinparam backgroundColor #FEFEFE
+skinparam componentStyle rectangle
+skinparam arrowColor #666666
+skinparam componentBackgroundColor #E8E8E8
+skinparam packageBackgroundColor #F5F5F5
+
+title **AS IS: Mooncake KVCache传输架构现状与痛点**
+
+package "Store模式 (Mooncake Store数据流)" as store_mode #FFE4E4 {
+
+    rectangle "Prefill节点\nNPU HBM\n(KVCache生产)" as prefill_hbm0 #F8B4B4
+    rectangle "Prefill节点\nHost DRAM\n(Store Segment)" as prefill_dram0 #F8B4B4
+    rectangle "Decode节点\nHost DRAM\n(Store Segment)" as decode_dram0 #F8B4B4
+    rectangle "Decode节点\nNPU HBM\n(KVCache消费)" as decode_hbm0 #F8B4B4
+
+    prefill_hbm0 -[#FF0000,thickness=3]-> prefill_dram0 : <size:12>**① PCIe DMA**\n~2μs\n<size:11><color:red>痛点: Host中转</color>
+    prefill_dram0 -[#FF0000,thickness=3]-> decode_dram0 : <size:12>**② RDMA**\n~5-10μs\n<size:11><color:red>痛点: Host侧RDMA</color>
+    decode_dram0 -[#FF0000,thickness=3]-> decode_hbm0 : <size:12>**③ PCIe DMA**\n~2μs\n<size:11><color:red>痛点: 再次Host中转</color>
+
+    note right of prefill_hbm0
+        <size:11><b>Store模式痛点分析</b></size>
+        ----
+        <color:red>• 4跳路径</color>
+        <color:red>• 总延迟: ~15-25μs</color>
+        <color:red>• Store内存池在Host侧</color>
+        <color:red>• 强制NPU→Host→RDMA中转</color>
+    end note
+}
+
+package "P2P直传模式 (Ascend Direct Transport)" as p2p_mode #FFFACD {
+
+    rectangle "Prefill节点\nNPU HBM\n(已注册MR)" as prefill_hbm1 #F0E68C
+    rectangle "Decode节点\nNPU HBM\n(已注册MR)" as decode_hbm1 #F0E68C
+
+    prefill_hbm1 -[#FFA500,thickness=3]-> decode_hbm1 : <size:12>**卡侧RoCE RDMA**\n~5-10μs\n<size:11><color:#FF8C00>当前: 1跳可达</color>
+
+    note right of prefill_hbm1
+        <size:11><b>P2P模式当前状态</b></size>
+        ----
+        <color:orange>• 1跳路径 (已较优)</color>
+        <color:orange>• 卡侧RoCE直传</color>
+        <color:orange>• 延迟上限: ~5-10μs</color>
+        ----
+        <color:#FF4500>优化空间:</color>
+        <color:#FF4500>灵衢HCCP可降至<1μs</color>
+    end note
+}
+
+package "缺失能力" as missing #FFE4E1 {
+
+    rectangle "GVA统一编址" as missing_gva #E8E8E8
+    rectangle "灵衢HCCP\n设备直连" as missing_hccp #E8E8E8
+    rectangle "多级缓存\n(L0-L4)" as missing_tiered #E8E8E8
+    rectangle "智能路径选择" as missing_path #E8E8E8
+
+    note bottom of missing
+        <size:11><color:#B22222><b>缺失能力导致的问题</b></color></size>
+        ----
+        <color:#B22222>• 无超节点内亚微秒直连</color>
+        <color:#B22222>• 缓存命中率低 (60-70%)</color>
+        <color:#B22222>• 路径选择静态无自适应</color>
+        <color:#B22222>• 跨节点地址转换开销大</color>
+    end note
+}
+
+legend bottom
+    <size:14><b>痛点汇总</b></size>
+    |= 颜色 |= 含义 |
+    | <color:red>红色</color> | Store模式痛点跳步 |
+    | <color:orange>橙色</color> | P2P模式优化空间 |
+    | <color:#B22222>深红</color> | 缺失能力 |
+endlegend
+
+@enduml
