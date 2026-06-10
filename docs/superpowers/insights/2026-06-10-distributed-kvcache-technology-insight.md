@@ -21,7 +21,7 @@ scope: 上游 Mooncake 贡献 + openFuyao 自研体系
 - [Section 2: 技术演进趋势](#section-2-技术演进趋势)
 - [Section 3: 生态格局与竞合分析](#section-3-生态格局与竞合分析)
 - [Section 4: 架构深度对比](#section-4-架构深度对比) <!-- 待撰写 -->
-- [Section 5: openFuyao 差异化定位与突破方向](#section-5-openfuyao-差异化定位与突破方向) <!-- 待撰写 -->
+- [Section 5: openFuyao 差异化定位与突破方向](#section-5-openfuyao-差异化定位与突破方向)
 - [Section 6: 双线规划路线图](#section-6-双线规划路线图) <!-- 待撰写 -->
 
 ---
@@ -543,6 +543,270 @@ KVCache 系统的价值最终体现在与推理引擎的集成效果上。集成
 
 ---
 
-<!-- Section 5: openFuyao 差异化定位与突破方向 — 待撰写 -->
+## Section 5: openFuyao 差异化定位与突破方向
+
+前四节从技术趋势、生态格局和架构对比三个维度建立了对分布式 KVCache 领域的全景认知。本节聚焦 openFuyao 自身——客观诊断现状优势和关键差距，确立差异化定位，并提出四个具体的突破方向。这一分析面向管理层和技术团队双重受众：管理层关注"openFuyao 应该成为什么"，技术团队关注"优先做什么、怎么做"。
+
+---
+
+### 5.1 现状诊断
+
+任何战略定位的前提是坦诚的自我评估。基于前文的技术趋势分析和架构对比，我们从优势和差距两个维度对 openFuyao / InferNex 的当前状态进行诊断。
+
+#### 5.1.1 核心优势
+
+**优势一：异构硬件原生支持——NPU 生态最完整的推理套件。**
+
+openFuyao 的 InferNex 原生适配华为 Ascend NPU + 鲲鹏 CPU，在国产 NPU 推理生态中拥有最完整的技术栈覆盖。这一优势体现在两个层面：一是硬件适配深度，InferNex 不仅通过 Mooncake TE 的 HCCL Transport 支持基础的 Ascend 通信，还在自研组件中针对 NPU 的 HBM 访问模式、HCCL 集合通信特性进行了专项优化；二是生产验证规模，InferNex 支撑中国移动、中国联通等运营商级 AI 推理平台，实际调度规模达到 10,000+ 节点，这种规模的实战经验在开源推理基础设施项目中极为罕见。在 Mooncake、HiCache、LMCache 等项目主要面向 NVIDIA GPU 生态的背景下，openFuyao 的 NPU 原生能力是不可替代的差异化资产。
+
+**优势二：云原生编排能力——智能路由、弹性扩展、深度可观测三位一体。**
+
+openFuyao 在云原生编排层拥有成熟的产品化能力，这是 Mooncake（偏底层存储引擎）、HiCache（偏推理引擎内层）、LMCache（偏管理层）都不具备的。核心组件包括：
+
+- **Hermes-router 智能路由**：支持 KVCache 感知路由和分桶路由策略，状态感知粒度达到 Pod 级别。在 PD 分离场景下，Hermes-router 能够根据 KVCache 的分布情况和节点负载，将请求路由到 KVCache 命中率最高的 Decode 节点，实测实现 22.08% 的端到端延迟（E2EL）改善。
+- **弹性扩展器**：基于潮汐算法实现资源的自动伸缩，支持 from/to 0（从零节点扩缩到满载），在 PD 分离场景下支持基于组的扩展策略（Prefill 组和 Decode 组独立扩缩）。
+- **Eagle-eye 可观测性**：提供 RDMA 带宽指标、PCIe 带宽监控、亚健康检测等深度可观测能力，为运维决策提供数据支撑。
+
+这三位一体的编排能力，使得 openFuyao 在"运维自动化"这一维度上明显领先于其他系统。
+
+**优势三：超大规模实战经验——运营商级生产部署。**
+
+openFuyao / InferNex 已在中国移动、中国联通等运营商的 AI 推理平台中投入生产使用，支撑 10,000+ 节点规模的推理调度。这种规模的实战经验在开源 KVCache 生态中独一无二——Mooncake 支撑 Kimi K2 在 128xH200 上的推理（约数百 GPU 规模），HiCache 和 LMCache 的生产案例多为企业级（数十到数百 GPU）。运营商级部署的特殊性在于：需要处理极高的并发请求量（百万级 QPS）、严格的 SLA 要求（99.99% 可用性）、以及复杂的网络环境（多数据中心、多可用区）。这种实战经验沉淀在路由策略、故障恢复、资源调度等编排层能力中，是短期内难以复制的技术积累。
+
+**优势四：已建立上游贡献基础——热缓存优化合并到 Mooncake。**
+
+openFuyao 团队已向 Mooncake 上游贡献了 Ascend 热缓存优化（hot cache optimization）代码，这些贡献已合并到 Mooncake 主分支。这表明 openFuyao 不仅在下游集成 Mooncake Store，还在上游参与 Mooncake 的技术演进。这种双向关系（上游贡献 + 下游集成）在 Mooncake 生态中的贡献者中并不多见，为 openFuyao 建立 Mooncake 核心 Maintainer 的地位奠定了基础。
+
+#### 5.1.2 关键差距
+
+**差距一：存储引擎层依赖——NPU 原生优化深度不足。**
+
+openFuyao 的底层 KVCache 存储目前依赖 Mooncake Store，而 Mooncake Store 的核心优化主要针对 NVIDIA GPU 场景（如 GPUDirect RDMA、NVLink 传输）。虽然 Mooncake TE 通过 HCCL Transport 和 ADXL Direct Transport 支持了 Ascend 的基本通信，但这些支持主要通过封装层实现（HCCL 是华为提供的集合通信库，Mooncake TE 封装了 HCCL 的接口），而非针对 Ascend NPU 底层硬件特性的原生互连优化。相比之下，MemCache 直接利用 Ascend 的 `device_rdma`、`device_sdma`、`host_urma` 等原生互连技术，在纯 Ascend 集群场景下可能具有性能优势。这意味着在 Ascend NPU 的 KVCache 传输效率上，openFuyao 尚未充分挖掘硬件潜力。
+
+**差距二：注意力机制适配——尚未贡献 NPU 专用布局处理器。**
+
+如 Section 4.3 所分析，Mooncake Store 已有 MHA、GQA、MLA、Hybrid 四种布局处理器，形成了可扩展的 Handler 架构。openFuyao 尚未在这一框架中贡献 NPU 专用的布局处理器或新注意力机制的适配实现。随着 Hybrid 注意力（Qwen3.5+）和稀疏注意力（GLM-5.1、DeepSeek V3.2）的快速普及，注意力机制适配能力已成为 KVCache 系统的核心竞争维度。如果 openFuyao 不能及时跟进新注意力机制的适配，将在模型支持范围上落后于 Mooncake Store 本身的演进速度。
+
+**差距三：社区影响力——与国际主流开源项目存在差距。**
+
+Mooncake 拥有 FAST 2025 Best Paper 的学术背书，2026 年 2 月正式加入 PyTorch 组织，支撑 Kimi K2 大规模推理。SGLang 拥有 LMSYS / UC Berkeley 的学术背书和高速增长的社区。LMCache 拥有 EuroSys 2025 Best Paper 和 Tensormesh 公司的专业运营。相比之下，openFuyao 的社区活跃度和国际影响力存在明显差距——主要面向中国市场，社区驱动以华为 / 中国移动 / 中国联通联盟为主，尚未形成全球开发者广泛参与的开源社区。这一差距直接影响技术人才吸引力和生态伙伴的参与意愿。
+
+**差距四：生态绑定——跨厂商互通能力需要加强。**
+
+openFuyao 与 Ascend 硬件生态存在较强的绑定关系，这在国产化推理场景下是优势，但在异构集群（Ascend + NVIDIA 混合部署）场景下可能成为限制。目前 openFuyao 主要通过 vLLM / vLLM-Ascend 进行推理引擎集成，对 SGLang 的支持有限。而 Section 3 的生态分析表明，SGLang + HiCache 是 KVCache 分层缓存的重要生态路线，对 SGLang 的支持缺失意味着 openFuyao 无法覆盖这一生态的用户。此外，"Ascend Prefill + NVIDIA Decode"这种异构推理场景需要 KVCache 在不同硬件平台间的高效格式转换和传输，openFuyao 在这方面的能力建设尚处于起步阶段。
+
+#### 5.1.3 诊断总结
+
+将优势和差距并置，可以看到一个清晰的模式：openFuyao 的优势集中在上层编排和 NPU 生态适配，差距集中在底层存储深度优化和跨生态互通。这一模式指向一个自然的技术定位——openFuyao 不应在底层存储引擎上与 Mooncake 正面竞争，而应在上层编排和异构 NPU 深度优化上构建差异化优势，同时通过上游贡献深化与 Mooncake 的技术绑定。
+
+---
+
+### 5.2 差异化定位
+
+#### 5.2.1 核心定位论点
+
+**openFuyao 不应成为"另一个 Mooncake"，而应成为"异构推理的云原生编排层"。**
+
+这一定位可以用以下公式表达：
+
+```
+openFuyao / InferNex = 异构硬件编排层 + 云原生治理层 + KVCache 存储优化贡献者
+```
+
+三个组件的含义：
+
+- **异构硬件编排层**：在 Ascend NPU、NVIDIA GPU 等多元硬件之上提供统一的推理调度和 KVCache 管理能力，解决异构集群中的资源分配、请求路由、KVCache 迁移等编排问题。
+- **云原生治理层**：将 KVCache 管理与 Kubernetes 生态深度集成，通过 Operator 模式实现 KVCache 生命周期的自动化治理（预热、淘汰、迁移、压缩），通过可观测性实现运维闭环。
+- **KVCache 存储优化贡献者**：通过向 Mooncake Store 上游贡献 NPU 专用优化（Ascend 原生互连、NPU 布局处理器），参与底层存储引擎的技术演进，但不独立构建竞争性存储引擎。
+
+#### 5.2.2 定位的合理性论证
+
+这一定位并非回避竞争，而是基于对技术栈分化和生态格局的客观分析得出的最优策略。论证如下：
+
+**论据一：底层存储引擎趋于收敛，重复建设的机会成本高。**
+
+Section 3.3 的判断 1 已经论证：Mooncake Store 正在成为 KVCache 底层存储引擎的事实标准。Mooncake TE 覆盖了 10+ 种传输协议和 4+ 种异构硬件平台，2026 年 2 月加入 PyTorch 组织，LMCache 和 HiCache 均已将 Mooncake Store 作为远程存储后端。在这一趋势下，openFuyao 独立构建底层存储引擎的投入产出比极低——不仅需要覆盖 Mooncake 已有的广度（TCP/RDMA/NVLink/CXL/NVMe-oF/HCCL/HIP/MUSA 等），还需要在每种协议上达到生产级优化水平。与其在底层"重复造轮子"，不如通过上游贡献参与 Mooncake 的技术演进，同时在 Mooncake 尚未充分优化的领域（Ascend NPU 原生互连）建立差异化能力。
+
+**论据二：编排层是 openFuyao 的独特能力区域，且尚无强力竞争者。**
+
+Section 3.1 的定位矩阵清晰显示：Mooncake 定位底层传输+存储，HiCache 定位推理引擎内层，LMCache 定位管理层——没有任何一个系统在"云原生编排"这一层级上与 openFuyao 直接竞争。openFuyao 的 Hermes-router（KVCache 感知路由）、弹性扩展器（潮汐算法、from/to 0）、Eagle-eye（深度可观测性）在这一层级上已经建立了产品化优势。这一空白区域正是 openFuyao 可以建立差异化护城河的领域。
+
+**论据三：NPU 生态的深度适配是高壁垒、高价值的差异化方向。**
+
+Section 3.3 的判断 3 论证了异构硬件是中国市场的独特变量，需要"既具备 NPU 原生优化能力、又能与 GPU 生态互通"的方案。目前没有任何开源系统在这一维度上达到生产级水平。openFuyao 凭借 Ascend NPU 的原生适配经验和运营商级生产部署，拥有建立这一差异化能力的最佳起点。但"NPU 深度适配"并不意味着"仅支持 NPU"——openFuyao 同时需要具备跨硬件互通能力，成为 Ascend 和 NVIDIA 之间的桥梁。
+
+#### 5.2.3 与关联系统的分工关系
+
+为了进一步明确定位的边界，需要定义 openFuyao 与关联系统的分工：
+
+**与 Mooncake 的分工：Mooncake 做底层传输和存储，openFuyao 做上层编排和治理。**
+
+| 层级 | Mooncake 的职责 | openFuyao 的职责 |
+|------|----------------|-----------------|
+| 传输层 | Transfer Engine 多协议传输、拓扑感知路径选择、多 NIC 聚合 | 利用 Mooncake TE 提供的传输能力，不重复实现 |
+| 存储层 | Store 多级存储引擎、布局处理器框架、多副本管理 | 向 Mooncake Store 贡献 NPU 专用优化和布局 Handler |
+| 编排层 | 不涉及 | Hermes-router 智能路由、弹性扩展、KVCache 生命周期治理 |
+| 可观测层 | 基础传输指标 | Eagle-eye 深度可观测性（RDMA/PCIe 带宽、亚健康检测） |
+
+openFuyao 通过上游贡献（NPU 优化、热缓存、新注意力机制 Handler）参与 Mooncake 技术演进，通过下游集成（InferNex 使用 Mooncake Store 作为存储后端）利用 Mooncake 的传输和存储能力。这种"贡献 + 集成"的双向关系确保 openFuyao 既不与 Mooncake 竞争，也不完全依赖 Mooncake——而是通过深度参与建立技术影响力。
+
+**与 MemCache 的分工：MemCache 做 Ascend 底层存储引擎，openFuyao 做 Ascend 上层编排。**
+
+MemCache 专注 Ascend NPU 的原生互连优化（`device_rdma` / `device_sdma` / `host_urma`），追求单平台极致性能。openFuyao 专注 Ascend 之上的编排调度和云原生治理。两者在 Ascend 生态中形成互补而非竞争——MemCache 提供 Ascend 底层存储引擎，openFuyao 在其上构建编排层。如果 MemCache 的 Ascend 原生互连优化成熟并开源，openFuyao 可以将其作为 InferNex 在纯 Ascend 集群场景下的存储后端，与 Mooncake Store 形成按场景选择的双后端架构。
+
+#### 5.2.4 差异化价值总结
+
+openFuyao 的独特价值在于"异构硬件编排 + 云原生治理"的组合能力：
+
+| 能力维度 | Mooncake | HiCache | LMCache | MemCache | **openFuyao** |
+|---------|---------|---------|---------|----------|-------------|
+| 底层传输与存储 | 强 | 弱（依赖后端） | 中（桥接层） | 强（Ascend 限定） | 中（利用 Mooncake） |
+| 推理引擎集成 | 广（多引擎） | 深（SGLang 绑定） | 深（vLLM 绑定） | 浅（vLLM-Ascend） | 中（vLLM/vLLM-Ascend） |
+| **异构硬件编排** | 不涉及 | 不涉及 | 不涉及 | 不涉及 | **强（核心能力）** |
+| **云原生治理** | 不涉及 | 不涉及 | 不涉及 | 不涉及 | **强（核心能力）** |
+| NPU 深度优化 | 浅（HCCL 封装） | 不支持 | 不支持 | 强（原生互连） | **中→强（规划中）** |
+
+这一表格清晰呈现了 openFuyao 的差异化空间：在"异构硬件编排"和"云原生治理"两个维度上，openFuyao 是唯一具有成熟能力的系统。这两个维度恰好是底层存储引擎（Mooncake、MemCache）和推理引擎管理层（HiCache、LMCache）都不覆盖的领域，形成了天然的定位空白。
+
+---
+
+### 5.3 四大突破方向
+
+基于上述定位分析，我们提出四个具体的突破方向。每个方向按优先级排序，包含明确的定位、技术路径、可参考系统和预期成果。
+
+#### 方向 1：NPU 原生 KVCache 优化（差异化护城河）—— P0
+
+**定位：** 成为 Ascend NPU 生态的 KVCache 标准实现，在 NPU 上实现与 GPU 上 Mooncake Store 对标的 KVCache 传输性能。
+
+**技术路径：**
+
+1. **Ascend 原生互连深度优化**：深入研究 Ascend NPU 的 `device_rdma`（设备侧 RDMA）、`device_sdma`（设备间直接内存访问）、`host_urma`（Kunpeng 处理器用户态 RDMA）等原生互连技术，在 Mooncake TE 的 ADXL Direct Transport 基础上实现更深层次的硬件直连优化。重点关注 NPU HBM 与 DRAM 之间的数据搬运效率，目标是消除 HCCL 封装层的性能开销。
+
+2. **NPU 稀疏注意力 KVCache 优化**：借鉴 HiSparse"活跃子集驻留"的思路（Section 2 趋势 2），针对 NPU 上的稀疏注意力场景优化 KVCache 传输策略——只传输被注意力模式选中的活跃 KV 子集，而非全量 KV。这需要对 Ascend NPU 上的注意力计算过程进行深入理解，识别活跃 KV 的选择模式，并据此优化传输策略。
+
+3. **贡献 NPU 专用布局处理器到 Mooncake Store 上游**：在 Mooncake Store 的 `KVCacheLayoutHandler` 框架中，实现 NPU 特定的内存布局适配处理器。Ascend NPU 的 HBM 访问模式（bank conflict 规避策略、内存对齐方式）可能与 NVIDIA GPU 不同，需要专门的序列化/反序列化逻辑来确保 KVCache 在 NPU 上的高效存取。这一贡献作为独立 PR 合并到 Mooncake Store 上游。
+
+4. **建立 NPU KVCache 性能基线**：在标准硬件配置（如 Atlas 800 训练服务器、Atlas 300I 推理卡）上建立 KVCache 传输性能基线，与 Mooncake Store 在 NVIDIA GPU 上的性能进行对标，量化优化效果。
+
+**可参考系统：**
+
+- HiSparse（活跃子集驻留思路）：[https://lmsys.org/blog/2026-04-10-sglang-hisparse/](https://lmsys.org/blog/2026-04-10-sglang-hisparse/)
+- Mooncake Store 布局处理器框架：`mooncake-store/include/kvcache_layout_handler.h`
+- MemCache RFC（Ascend 原生互连设计参考）：[https://github.com/vllm-project/vllm-ascend/issues/6410](https://github.com/vllm-project/vllm-ascend/issues/6410)
+
+**预期成果：**
+
+- Ascend NPU 上 KVCache 传输性能达到 Mooncake Store 在 NVIDIA GPU 上的 80%+ 水平（考虑硬件架构差异）
+- NPU 专用布局处理器作为独立 PR 合并到 Mooncake Store 上游
+- 建立 Ascend NPU KVCache 性能基线和持续优化框架
+
+---
+
+#### 方向 2：异构集群跨厂商 KVCache 互通（生态桥梁）—— P0
+
+**定位：** 成为异构推理（Ascend + NVIDIA）的事实标准，实现跨硬件平台 KVCache 的高效格式转换与传输，使异构集群 PD 分离场景的性能损失控制在最低水平。
+
+**技术路径：**
+
+1. **KVCache 格式分析与转换层设计**：深入分析 Ascend NPU 和 NVIDIA GPU 上 KVCache 的内存布局差异——包括数据类型差异（FP16/BF16 的存储方式）、内存对齐差异（NPU 和 GPU 可能要求不同的对齐边界）、注意力计算的中间表示差异（如 GQA 的组划分方式在不同硬件上可能不同）。基于分析结果，设计高效的 KVCache 格式转换层，支持 Ascend 格式到 NVIDIA 格式的双向转换。
+
+2. **异构传输路径优化**：在 Mooncake TE 的异构传输能力（HCCL Transport + ADXL Direct Transport 用于 Ascend 侧，RDMA Transport 用于 NVIDIA 侧）基础上，补充格式适配层，使得 Ascend Prefill 节点产生的 KVCache 可以无损传输到 NVIDIA Decode 节点（反之亦然）。重点优化转换过程中的零拷贝策略，避免不必要的数据拷贝开销。
+
+3. **异构路由策略扩展**：在 Hermes-router 的现有路由策略基础上，增加"硬件类型感知"维度——路由器不仅考虑 KVCache 命中率和节点负载，还要考虑源节点和目标节点的硬件类型（Ascend vs NVIDIA），选择格式转换开销最小的路由路径。
+
+4. **端到端性能验证**：在 Ascend + NVIDIA 混合集群上建立端到端的 PD 分离推理测试基准，量化异构场景相对于同构场景的性能损失，并持续优化。
+
+**可参考系统：**
+
+- Mooncake TE 异构传输架构（HCCL / ADXL / heterogeneous_rdma_transport）
+- vLLM-Ascend PD 分离验证：[https://docs.vllm.ai/projects/ascend/en/v0.11.0/tutorials/multi_node_pd_disaggregation_mooncake.html](https://docs.vllm.ai/projects/ascend/en/v0.11.0/tutorials/multi_node_pd_disaggregation_mooncake.html)
+
+**预期成果：**
+
+- 异构集群（Ascend Prefill + NVIDIA Decode）PD 分离场景的性能损失控制在同构集群的 10% 以内
+- KVCache 格式转换层作为独立模块，可被 Mooncake TE 和其他系统复用
+- 异构路由策略扩展集成到 Hermes-router
+
+---
+
+#### 方向 3：云原生 KVCache 治理（管理层突破）—— P1
+
+**定位：** 从"组件提供者"升级为"治理平台"，通过 Kubernetes 原生的方式实现 KVCache 全生命周期的自动化管理。
+
+**技术路径：**
+
+1. **KVCache 生命周期管理 K8s Operator**：设计并实现 Kubernetes Operator，将 KVCache 的生命周期管理（预热、淘汰、迁移、压缩）声明化为 Kubernetes 原生资源。运维人员可以通过 CRD（Custom Resource Definition）定义 KVCache 的管理策略（如"RAG 场景下的共享前缀 KVCache 在低峰期预热、高峰后 2 小时淘汰"），Operator 自动执行。这一设计使得 KVCache 管理与 Kubernetes 的滚动更新、弹性伸缩等原生能力无缝集成。
+
+2. **基于流量预测的主动缓存调度**：扩展 Hermes-router 的路由策略，引入流量预测模型——根据历史请求模式预测未来的 KVCache 需求，在请求到来之前主动预热高概率命中的 KVCache。例如，在 RAG 场景下，根据历史查询模式预测热门文档，提前将对应 KVCache 从 SSD 加载到 DRAM 或预传输到目标节点。这一"预测式调度"策略可以将 KVCache 命中率从被动统计提升到主动优化。
+
+3. **深度可观测性扩展**：在 Eagle-eye 现有的 RDMA 带宽和 PCIe 带宽监控基础上，增加 KVCache 维度的可观测性指标——包括 KVCache 命中率、缓存层级分布（多少 KV 在 HBM/DRAM/SSD）、缓存淘汰率、跨节点 KVCache 传输延迟等。这些指标通过 Prometheus Exporter 暴露，可与 Grafana 等标准可观测性工具集成，形成运维闭环。
+
+4. **多引擎兼容的缓存策略抽象**：设计统一的缓存策略抽象层，同时兼容 vLLM KV Connector 和 SGLang HiCache 的接口，使得同一套 KVCache 治理策略可以跨推理引擎生效。这一抽象层不替代 HiCache 或 LMCache 的功能，而是在其上提供统一的生命周期管理。
+
+**可参考系统：**
+
+- Kubernetes Operator 模式：[https://kubernetes.io/docs/concepts/extend-kubernetes/operator/](https://kubernetes.io/docs/concepts/extend-kubernetes/operator/)
+- Hermes-router 路由策略（openFuyao v26.03）
+- LMCache CacheBlend（跨请求 KVCache 管理思路参考）
+
+**预期成果：**
+
+- KVCache 生命周期管理 Operator 发布，支持预热/淘汰/迁移/压缩四种策略
+- 基于流量预测的主动缓存调度实现 KVCache 命中率提升 20%+
+- 深度可观测性指标通过 Prometheus Exporter 暴露，形成运维闭环
+
+---
+
+#### 方向 4：上游贡献战略（生态共建）—— P1
+
+**定位：** 成为 Mooncake 核心 Maintainer 之一，通过持续、高质量的上游贡献建立技术影响力，使 openFuyao 成为 Mooncake 生态中异构 NPU 方向的权威贡献者。
+
+**技术路径：**
+
+1. **核心贡献回流**：将 NPU 原生互连优化、热缓存优化、异构适配等核心能力以 PR 形式贡献到 Mooncake 上游。贡献需要遵循 Mooncake 社区的代码规范和 RFC 流程，确保代码质量和可维护性。重点关注以下高价值贡献方向：
+
+   - Mooncake Store 布局处理器框架中的 NPU 专用处理器（方向 1 的产出）
+   - Mooncake TE 中 Ascend ADXL Direct Transport 的性能优化
+   - 异构 KVCache 格式转换模块（方向 2 的产出，通用化后贡献）
+
+2. **新注意力机制 Handler 贡献**：关注 DeepSeek、Qwen、GLM 等模型团队的新注意力机制发布，在 Mooncake Store 布局处理器框架中第一时间实现新 Handler。每种新 Handler 都是可直接合并的独立 PR，既能提升 Mooncake 生态的完整性，又能建立 openFuyao 在注意力机制适配方面的技术影响力。
+
+3. **社区治理参与**：积极参与 Mooncake 社区的 RFC 讨论和技术决策，在异构硬件、NPU 优化等方向上提供专业意见。长期目标是成为 Mooncake 的 Reviewer / Maintainer，参与代码审核和发布决策。
+
+4. **文档和示例贡献**：提供 Ascend NPU 上使用 Mooncake Store 的完整部署指南和性能调优文档，降低新用户在 Ascend 环境下的上手门槛。高质量的文档贡献是建立社区影响力的重要途径。
+
+**可参考系统：**
+
+- Mooncake 社区贡献流程：[https://github.com/kvcache-ai/Mooncake/blob/main/CONTRIBUTING.md](https://github.com/kvcache-ai/Mooncake/blob/main/CONTRIBUTING.md)
+- Mooncake RFC 流程：[https://github.com/kvcache-ai/Mooncake/issues](https://github.com/kvcache-ai/Mooncake/issues)
+
+**预期成果：**
+
+- 年度贡献量进入 Mooncake Top 5 Contributors
+- 至少 2 个高价值 PR（NPU 布局处理器、异构格式转换模块）合并到 Mooncake 主分支
+- 在 Mooncake 社区中获得 Reviewer 或 Maintainer 角色
+
+---
+
+### 5.4 突破方向优先级与依赖关系
+
+四个方向之间存在逻辑依赖关系，下图展示了推荐的实施顺序：
+
+| 阶段 | 方向 | 优先级 | 依赖 |
+|------|------|--------|------|
+| 第一阶段（0-6 个月） | 方向 1：NPU 原生 KVCache 优化 | P0 | 无 |
+| 第一阶段（0-6 个月） | 方向 2：异构集群 KVCache 互通 | P0 | 方向 1 的格式分析结果 |
+| 第二阶段（6-12 个月） | 方向 3：云原生 KVCache 治理 | P1 | 方向 1/2 的基础能力 |
+| 持续进行 | 方向 4：上游贡献战略 | P1 | 方向 1/2/3 的技术产出 |
+
+方向 1 和方向 2 是 P0 优先级，建议并行推进——方向 1 聚焦 Ascend NPU 的原生优化，方向 2 聚焦异构互通能力，两者在格式分析阶段有协同（都需要深入理解 Ascend NPU 的 KVCache 内存布局）。方向 3（P1）在方向 1/2 建立基础能力后推进，利用 NPU 优化和异构互通的成果构建治理平台。方向 4（P1）是持续进行的工作，将方向 1/2/3 的技术产出转化为上游贡献。
+
+### 5.5 本章小结
+
+openFuyao 的差异化定位是"异构推理的云原生编排层"，这一定位基于三个客观现实：底层存储引擎趋于收敛（Mooncake Store 成为主流）、openFuyao 在编排层拥有独特优势（Hermes-router / 弹性扩展器 / Eagle-eye）、异构硬件是中国市场的独特变量（需要 NPU 深度优化 + GPU 互通能力）。
+
+四个突破方向围绕这一定位展开：P0 方向（NPU 原生优化 + 异构互通）构建技术护城河，P1 方向（云原生治理 + 上游贡献）扩展生态影响力。这四个方向不是孤立的——NPU 优化为异构互通奠定基础，异构互通为云原生治理提供场景，所有技术产出通过上游贡献转化为社区影响力。Section 6 将基于这些方向制定具体的双线规划路线图。
+
+---
 
 <!-- Section 6: 双线规划路线图 — 待撰写 -->
