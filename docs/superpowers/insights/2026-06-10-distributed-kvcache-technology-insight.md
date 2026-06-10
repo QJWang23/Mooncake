@@ -286,34 +286,36 @@ KVCache 系统与推理引擎的关系正在从松耦合的独立组件走向深
 
 ### 3.1 定位矩阵
 
-下表从八个维度对五大系统进行横向对比，揭示各系统在生态中的差异化定位：
+下表从八个维度对六大系统进行横向对比，揭示各系统在生态中的差异化定位：
 
-| 维度 | Mooncake | HiCache + SGLang | LMCache | MemCache | openFuyao / InferNex |
-|------|----------|-------------------|---------|----------|----------------------|
-| **核心定位** | 分布式 KVCache 存储引擎 + 传输引擎 | 分层 KV 缓存系统（RadixAttention 深度集成） | KVCache 管理层（KDN — 知识交付网络） | Ascend NPU 原生分布式 KVCache 引擎 | 云原生 AI 推理基础设施（编排 + 调度 + 存储） |
-| **技术栈层级** | 底层传输 + 存储 | 推理引擎内层 | 推理引擎与存储之间的管理层 | 底层传输 + 存储（Ascend 原生） | 上层编排 + 调度 + 存储 |
-| **推理引擎支持** | vLLM / SGLang / TRT-LLM / LMDeploy | SGLang 原生（RadixAttention 绑定） | vLLM 原生（KV Connector 绑定） | vLLM-Ascend | vLLM / vLLM-Ascend |
-| **硬件生态** | NVIDIA / AMD / Ascend / Moore Threads | NVIDIA（主力） | NVIDIA | Ascend NPU | x86 / ARM / GPU / NPU |
-| **存储层级** | GPU → DRAM → SSD（RDMA） | GPU → CPU → 远程存储 | GPU → CPU → 本地 NVMe → 远程 | 设备 → 主机 → 远程（Ascend RDMA） | 分布式池化存储 |
-| **开源协议** | MIT | Apache 2.0 | Apache 2.0 | 华为内部（未开源） | Apache 2.0 |
-| **社区活跃度** | PyTorch 生态核心项目；FAST 2025 Best Paper；2026.02 正式加入 PyTorch 组织；支撑 Kimi K2 大规模推理 | LMSYS / UC Berkeley 背书；蚂蚁集团、Novita AI、阿里云 Tair 等生产使用；SGLang 社区高速增长 | Tensormesh 公司运营；EuroSys 2025 CacheBlend Best Paper；2025.05 与 Mooncake 战略合作；vLLM 生态重要组成 | 华为内部驱动；vLLM-Ascend 社区 RFC #6410 提案阶段；尚未形成独立开源社区 | 华为 / 中国移动 / 中国联通联盟驱动；v26.03 正式发布；声称 10,000+ 节点调度能力 |
-| **代表用户 / 案例** | Kimi K2（128x H200，224k/288k tokens/sec）；vLLM 官方集成（2026.05） | 蚂蚁集团 DeepSeek-R1-671B（TTFT 降低 84%）；Novita AI；阿里云 Tair | vLLM KV Connector 标准后端；RAG 场景近 100% 命中率 | vLLM-Ascend PD 分离验证（Mooncake 后端） | 中国移动 / 中国联通 AI 推理平台；InferNex PD 感知路由（E2EL 改善 22.08%） |
+| 维度 | Mooncake | HiCache + SGLang | LMCache | MemCache | Yuanrong Data System | openFuyao / InferNex |
+|------|----------|-------------------|---------|----------|---------------------|----------------------|
+| **核心定位** | 分布式 KVCache 存储引擎 + 传输引擎 | 分层 KV 缓存系统（RadixAttention 深度集成） | KVCache 管理层（KDN — 知识交付网络） | Ascend NPU 原生分布式 KVCache 引擎 | 内存中心、近计算分布式异构多级缓存（Serverless 数据子系统） | 云原生 AI 推理基础设施（编排 + 调度 + 存储） |
+| **技术栈层级** | 底层传输 + 存储 | 推理引擎内层 | 推理引擎与存储之间的管理层 | 底层传输 + 存储（Ascend 原生） | 底层传输+存储（Serverless原生） | 上层编排 + 调度 + 存储 |
+| **推理引擎支持** | vLLM / SGLang / TRT-LLM / LMDeploy | SGLang 原生（RadixAttention 绑定） | vLLM 原生（KV Connector 绑定） | vLLM-Ascend | vLLM-Ascend（KV Pool 后端）、veRL | vLLM / vLLM-Ascend |
+| **硬件生态** | NVIDIA / AMD / Ascend / Moore Threads | NVIDIA（主力） | NVIDIA | Ascend NPU | Ascend NPU（仅） | x86 / ARM / GPU / NPU |
+| **存储层级** | GPU → DRAM → SSD（RDMA） | GPU → CPU → 远程存储 | GPU → CPU → 本地 NVMe → 远程 | 设备 → 主机 → 远程（Ascend RDMA） | HBM→DRAM→SSD（透明分层） | 分布式池化存储 |
+| **开源协议** | MIT | Apache 2.0 | Apache 2.0 | 华为内部（未开源） | Apache 2.0（openEuler 社区） | Apache 2.0 |
+| **社区活跃度** | PyTorch 生态核心项目；FAST 2025 Best Paper；2026.02 正式加入 PyTorch 组织；支撑 Kimi K2 大规模推理 | LMSYS / UC Berkeley 背书；蚂蚁集团、Novita AI、阿里云 Tair 等生产使用；SGLang 社区高速增长 | Tensormesh 公司运营；EuroSys 2025 CacheBlend Best Paper；2025.05 与 Mooncake 战略合作；vLLM 生态重要组成 | 华为内部驱动；vLLM-Ascend 社区 RFC #6410 提案阶段；尚未形成独立开源社区 | ~19 贡献者，华为主导，Beta 阶段，SIGCOMM 2024 论文背书 | 华为 / 中国移动 / 中国联通联盟驱动；v26.03 正式发布；声称 10,000+ 节点调度能力 |
+| **代表用户 / 案例** | Kimi K2（128x H200，224k/288k tokens/sec）；vLLM 官方集成（2026.05） | 蚂蚁集团 DeepSeek-R1-671B（TTFT 降低 84%）；Novita AI；阿里云 Tair | vLLM KV Connector 标准后端；RAG 场景近 100% 命中率 | vLLM-Ascend PD 分离验证（Mooncake 后端） | 工行联合开发，华为云验证，vLLM-Ascend 集成 | 中国移动 / 中国联通 AI 推理平台；InferNex PD 感知路由（E2EL 改善 22.08%） |
 
 #### 定位矩阵解读
 
-从矩阵中可以提炼出三个结构性特征：
+从矩阵中可以提炼出四个结构性特征：
 
-**第一，技术栈层级分化明显。** Mooncake 和 MemCache 位于底层（传输 + 存储），HiCache 嵌入推理引擎内部，LMCache 位于推理引擎与存储之间的中间层，openFuyao 则定位在上层编排。这五个系统并不完全在同一维度竞争——底层竞争传输效率和硬件覆盖面，中层竞争 KVCache 管理策略和复用效率，上层竞争调度智能和运维自动化。
+**第一，技术栈层级分化明显。** Mooncake、MemCache 和 Yuanrong 位于底层（传输 + 存储），HiCache 嵌入推理引擎内部，LMCache 位于推理引擎与存储之间的中间层，openFuyao 则定位在上层编排。这六个系统并不完全在同一维度竞争——底层竞争传输效率和硬件覆盖面，中层竞争 KVCache 管理策略和复用效率，上层竞争调度智能和运维自动化。
 
 **第二，推理引擎绑定形成阵营效应。** HiCache 与 SGLang 深度绑定（RadixAttention），LMCache 与 vLLM 深度绑定（KV Connector），Mooncake 则保持引擎中立（同时支持 vLLM、SGLang、TRT-LLM、LMDeploy）。这种绑定关系既是竞争优势（深度集成带来性能优势），也是竞争局限（迁移成本高，生态受限于绑定引擎的市场份额）。
 
-**第三，硬件生态是最大的分化因素。** Mooncake 覆盖 NVIDIA / AMD / Ascend / Moore Threads 四大平台；HiCache 和 LMCache 聚焦 NVIDIA；MemCache 专注 Ascend；openFuyao 追求全平台覆盖但深度有限。在中国市场，硬件多样性不是可选项，这直接影响了各系统的市场空间。
+**第三，硬件生态是最大的分化因素。** Mooncake 覆盖 NVIDIA / AMD / Ascend / Moore Threads 四大平台；HiCache 和 LMCache 聚焦 NVIDIA；MemCache 和 Yuanrong 专注 Ascend（但 Yuanrong 专一性更强——仅支持 Ascend）；openFuyao 追求全平台覆盖但深度有限。在中国市场，硬件多样性不是可选项，这直接影响了各系统的市场空间。
+
+**第四，Ascend 生态内部存在底层存储引擎竞争。** Yuanrong Data System 与 MemCache 同为 Ascend 生态的底层 KVCache 存储方案，但定位有所不同：Yuanrong 作为 openEuler 社区的 Serverless 数据子系统，具有更完整的开源生态和 SIGCOMM 2024 论文的学术背书；MemCache 作为 vLLM-Ascend 社区的 RFC 提案，尚处于提案阶段。两者在 Ascend KV Pool 后端市场存在直接竞争，且 Yuanrong 已在 vLLM-Ascend PR #7649 中作为 KVPool 后端集成，与 Mooncake Store 形成多后端选择。
 
 ---
 
 ### 3.2 竞合关系
 
-以下 Mermaid 图展示了五大系统之间的竞合关系网络：
+以下 Mermaid 图展示了六大系统之间的竞合关系网络：
 
 ```mermaid
 graph TD
@@ -323,6 +325,7 @@ graph TD
     MC[MemCache<br/>Ascend 底层存储]
     OF[openFuyao / InferNex<br/>上层编排调度]
     HS[HiSparse<br/>稀疏注意力 KVCache]
+    YR[Yuanrong Data System<br/>Ascend Serverless 存储]
 
     %% 合作关系
     MK <-.->|战略合作<br/>LMCache 作为 vLLM-Mooncake<br/>桥接层 2025.05| LMC
@@ -331,9 +334,12 @@ graph TD
     %% 竞争关系
     HC <-->|分层缓存竞争<br/>分别绑定 SGLang / vLLM| LMC
     MK <-->|同类底层存储引擎<br/>不同硬件平台| MC
+    MK <-->|同类底层存储引擎<br/>跨硬件 vs Ascend 深度优化| YR
+    MC <-->|同为 Ascend KVPool 后端<br/>不同架构路线| YR
 
     %% 上下游关系
     OF ==>|上游贡献 + 下游集成<br/>热缓存优化已合并上游| MK
+    YR -->|KVPool 后端<br/>vLLM-Ascend PR #7649| VLA[vLLM-Ascend]
 
     %% 承继关系
     HS -.->|相同分层理念<br/>应用于稀疏注意力场景| HC
@@ -344,8 +350,8 @@ graph TD
     classDef supply fill:#e3f2fd,stroke:#2196f3,stroke-width:2px
     classDef inherit fill:#f3e5f5,stroke:#9c27b0,stroke-width:2px
     class MK,LMC,HC coop
-    class MC comp
-    class OF supply
+    class MC,YR comp
+    class OF,VLA supply
     class HS inherit
 ```
 
@@ -370,6 +376,20 @@ graph TD
 - MemCache 专注 Ascend NPU 原生优化，直接利用 `device_rdma` / `sdma` / `host_urma` 等 Ascend 原生互连技术，追求单平台极致性能。
 
 在纯 Ascend 集群场景下，MemCache 的原生优化可能带来性能优势；但在异构混合集群（Ascend + NVIDIA）场景下，Mooncake 的跨平台能力更具价值。值得注意的是，MemCache 目前以 vLLM-Ascend RFC #6410 提案的形式存在，尚未形成独立的开源社区，其长期发展路径仍存在不确定性。
+
+**Yuanrong 与 Mooncake 的 Ascend 底层存储引擎之争**，是 Ascend 生态内最直接的底层竞争。两者都提供 vLLM-Ascend 的 KV Pool 后端能力，形成直接竞争关系：
+
+- Yuanrong 定位为 Ascend-only 的 Serverless 数据子系统，采用分布式元数据架构（Object Directory + Location Encoding），更适合 10,000+ 卡规模的超大规模部署场景。Yuanrong 通过 UB 总线（鲲鹏处理器与 Ascend NPU 之间的高速互连）实现 48GB/s H2H 带宽，在 Ascend 原生传输路径上具有独特优势。SIGCOMM 2024 论文为 Yuanrong 提供了学术界权威背书。
+- Mooncake 追求跨硬件统一抽象，元数据采用集中式 Master 架构，在异构集群（Ascend + NVIDIA 混合部署）场景下更具优势。Mooncake 的 Transfer Engine 覆盖 10+ 种传输协议，跨硬件适配能力远超 Yuanrong。
+
+在纯 Ascend 大规模集群场景下，Yuanrong 的分布式元数据架构和 UB 总线优化可能带来性能和扩展性优势；但在异构混合集群场景下，Mooncake 的跨平台能力不可替代。当前 vLLM-Ascend 社区面临 KVPool 后端的选择问题（Mooncake Store vs Yuanrong），这一选择将深刻影响 Ascend 推理生态的演进方向。
+
+**Yuanrong 与 MemCache 的 Ascend KVPool 后端之争**，是 Ascend 生态内部的二级竞争。两者都专注于 Ascend NPU 平台的 KVCache 存储优化，但技术路线和社区生态不同：
+
+- Yuanrong 拥有 SIGCOMM 2024 论文背书和 openEuler 社区的开源生态，已通过 vLLM-Ascend PR #7649 作为 KVPool 后端集成，社区可见度更高。
+- MemCache 聚焦 Ascend 原生互连（device_rdma / device_sdma / host_urma）的极致优化，但以 vLLM-Ascend RFC #6410 提案形式存在，尚未形成独立社区。
+
+短期内，Yuanrong 在社区生态和产品化进度上领先于 MemCache；但 MemCache 的底层硬件直连优化理念如果成熟落地，可能在纯 Ascend 场景下实现更高的传输性能。
 
 #### 3.2.3 上下游关系
 
@@ -419,7 +439,7 @@ Section 3 从生态格局角度分析了各系统的定位与竞合关系。本�
 
 ### 4.1 存储层级设计对比
 
-存储层级是 KVCache 系统的骨架——它决定了数据在不同介质间的流转方式、淘汰策略和性能上限。四大系统在层级数、层级定义、淘汰策略和层间迁移方式上呈现出显著差异：
+存储层级是 KVCache 系统的骨架——它决定了数据在不同介质间的流转方式、淘汰策略和性能上限。五大系统在层级数、层级定义、淘汰策略和层间迁移方式上呈现出显著差异：
 
 | 系统 | 层级数 | 层级定义 | 淘汰策略 | 层间迁移 | 关键创新 |
 |------|--------|----------|----------|----------|----------|
@@ -427,6 +447,7 @@ Section 3 从生态格局角度分析了各系统的定位与竞合关系。本�
 | HiCache | 3 | GPU -> CPU -> 远程存储 | 分层重叠 + 预取 | GPU 辅助 I/O 内核（3x cudaMemcpy） | HiRadixTree 页表管理、可配置写策略（write-through / write-back） |
 | LMCache | 4 | GPU -> CPU -> 本地 NVMe -> 远程 | LRU + 256-token 分块 | 异步 + NUMA 感知分配 | CacheBlend 跨请求混合、NVMe GDS 直通 |
 | MemCache | 3 | 设备 -> 主机 -> 远程 | 多副本负载均衡 | Ascend 互连（SDMA / RDMA） | device_rdma / device_sdma / host_urma 原生互连 |
+| Yuanrong Data System | 3 | HBM -> DRAM -> SSD | 透明分层，应用无感知 | 自动溢出，H2D/D2D/UB 多种传输路径 | 透明分层抽象、UB 总线 48GB/s H2H 传输、分布式元数据（Object Directory + Location Encoding） |
 
 #### 层级架构的设计取舍
 
@@ -438,9 +459,11 @@ Section 3 从生态格局角度分析了各系统的定位与竞合关系。本�
 
 **MemCache** 针对 Ascend NPU 的硬件特性定义了 3 层架构（设备 -> 主机 -> 远程），并通过 `device_rdma`、`device_sdma`、`host_urma` 等 Ascend 原生互连技术实现层间迁移。其中 `device_rdma` 允许 NPU 设备直接发起 RDMA 操作，`device_sdma` 提供设备间的高速直接内存访问，`host_urma` 则提供主机侧的用户态 RDMA 能力。这种"原生互连优先"的设计在纯 Ascend 集群场景下可能带来显著性能优势，但也意味着与 GPU 生态的互通需要额外的协议转换层。
 
+**Yuanrong Data System** 同样采用 3 层架构（HBM -> DRAM -> SSD），但其核心设计理念是"透明分层"——应用层无需感知 KVCache 位于哪个存储层级，系统根据容量压力和访问模式自动在 HBM、DRAM 和 SSD 之间进行数据溢出和回填。层间迁移支持多种 Ascend 原生传输路径：H2D（Host to Device）用于 DRAM 到 NPU HBM 的数据搬运，D2D（Device to Device）用于 NPU 间的直接数据传输，UB（UniBand）总线实现鲲鹏处理器与 Ascend NPU 之间 48GB/s 的高速 H2H 传输。Yuanrong 的分布式元数据架构（Object Directory + Location Encoding）是其在大规模集群场景下的关键差异化优势——相比 Mooncake 的集中式 Master 架构，分布式元数据避免了单点瓶颈，更适合 10,000+ 卡规模的超大规模部署。但这一架构的代价是增加了元数据一致性管理的复杂度。
+
 #### 关键洞察
 
-HiCache 的 GPU 辅助 I/O 内核是当前所有系统中最为独特的存储层创新——它改变了数据搬运的计算模型（从 CPU 搬运到 GPU 自搬运），而非仅仅优化搬运参数。LMCache 的 NVMe GDS 层和 NUMA 感知分配使其在大规模持久化场景中具有差异化优势，特别是对于需要长期保存 KVCache 的 RAG 和多轮对话场景。MemCache 的 Ascend 原生互连在 NPU 场景下拥有硬件直连优势，但这一优势目前受限于 Ascend 生态的覆盖范围和社区成熟度。总体而言，层级数的差异（3 层 vs 4 层）并非关键竞争维度，**层间迁移效率和淘汰策略的智能化程度**才是决定存储层级性能上限的核心因素。
+HiCache 的 GPU 辅助 I/O 内核是当前所有系统中最为独特的存储层创新——它改变了数据搬运的计算模型（从 CPU 搬运到 GPU 自搬运），而非仅仅优化搬运参数。LMCache 的 NVMe GDS 层和 NUMA 感知分配使其在大规模持久化场景中具有差异化优势，特别是对于需要长期保存 KVCache 的 RAG 和多轮对话场景。MemCache 和 Yuanrong 均在 Ascend NPU 场景下拥有硬件直连优势，但路线不同：MemCache 通过原生互连（device_rdma / device_sdma / host_urma）追求极致传输性能，Yuanrong 通过透明分层和分布式元数据追求超大规模部署的可扩展性。总体而言，层级数的差异（3 层 vs 4 层）并非关键竞争维度，**层间迁移效率和淘汰策略的智能化程度**才是决定存储层级性能上限的核心因素。
 
 ---
 
@@ -454,6 +477,7 @@ HiCache 的 GPU 辅助 I/O 内核是当前所有系统中最为独特的存储�
 | HiCache | 插件式后端（3 函数接口：get / exist / set） | Mooncake Store / DeepSeek 3FS / NVIDIA NIXL / 本地文件 | 极简接口设计，新后端接入仅需 3 个函数 |
 | LMCache | NIXL / Redis / Mooncake Store / InfiniStore | 点对点通道、Pinned Memory 传输 | 存储模式（持久化卸载） + 传输模式（PD 解耦）双模 |
 | MemCache | MemFabric（device_rdma / device_sdma / host_rdma / host_urma） | Ascend 原生互连、Kunpeng URMA | Ascend NPU 底层硬件直连优化 |
+| Yuanrong Data System | D2D（NPU P2P）/ H2D / H2H（UB 48GB/s）/ 跨节点 H2D 直访 | Ascend 原生互连、HCCL/HCCS/RoCE/UB 多路径 | Ascend 生态最完整的传输路径覆盖（UB 总线 48GB/s H2H 是独有优势） |
 
 #### 传输能力的设计哲学差异
 
@@ -465,9 +489,11 @@ HiCache 的 GPU 辅助 I/O 内核是当前所有系统中最为独特的存储�
 
 **MemCache** 的 MemFabric 传输层专为 Ascend NPU 生态设计，直接利用 `device_rdma`（设备侧 RDMA）、`device_sdma`（设备间直接内存访问）、`host_rdma`（主机侧 RDMA）、`host_urma`（Kunpeng 处理器用户态 RDMA）等 Ascend 原生互连技术。这种硬件直连方式绕过了通用传输抽象层的开销，在纯 Ascend 集群中可以实现接近硬件极限的传输性能。但这一优势以牺牲跨硬件平台的可移植性为代价。
 
+**Yuanrong Data System** 的传输层覆盖了 Ascend 生态内最完整的传输路径组合：D2D（NPU P2P 直接传输）用于 NPU 间高速数据交换，H2D（Host to Device）用于 CPU 到 NPU 的数据搬运，H2H（Host to Host）通过 UB 总线实现鲲鹏处理器间 48GB/s 的高速传输，以及跨节点 H2D 直访用于远程 NPU 的直接数据写入。Yuanrong 支持 HCCL、HCCS、RoCE 和 UB 等多种 Ascend 原生互连协议，其 UB 总线的 48GB/s H2H 带宽是当前 Ascend 生态中独有的传输优势——相比标准 RDMA 的 ~25GB/s，UB 总线在鲲鹏 + Ascend 组合场景下提供了接近 2 倍的带宽提升。但 Yuanrong 的传输能力完全绑定 Ascend 生态，无法支持跨硬件平台传输。
+
 #### 关键洞察
 
-Mooncake TE 的传输能力在广度和深度上均为当前开源项目之最——10+ 种传输协议和 4+ 种异构硬件平台的覆盖，使其成为"传输层事实标准"的有力候选。HiCache 的插件式设计虽然传输能力有限，但其极简接口（3 函数模型）大幅降低了新存储后端的集成门槛，从工程实践角度看，这是一种"以接口换生态"的有效策略。MemCache 在 Ascend 原生互连上的独特优势使其在国产 NPU 场景下具有不可替代性，但这一优势目前受限于 Ascend 生态的独立性和社区规模。**传输引擎的竞争正在从"支持更多协议"走向"更智能的协议选择"**——未来系统需要根据实时网络状况、数据大小、硬件拓扑等因素动态选择最优传输路径，而非静态配置固定协议。
+Mooncake TE 的传输能力在广度和深度上均为当前开源项目之最——10+ 种传输协议和 4+ 种异构硬件平台的覆盖，使其成为"传输层事实标准"的有力候选。HiCache 的插件式设计虽然传输能力有限，但其极简接口（3 函数模型）大幅降低了新存储后端的集成门槛，从工程实践角度看，这是一种"以接口换生态"的有效策略。MemCache 和 Yuanrong 均在 Ascend 原生互连上拥有独特优势，但路线不同：MemCache 聚焦底层硬件直连（device_rdma / device_sdma / host_urma），Yuanrong 聚焦 Ascend 生态内最完整的传输路径覆盖（D2D / H2D / H2H / 跨节点直访），其中 UB 总线 48GB/s 的 H2H 传输是 Yuanrong 独有的性能优势。**传输引擎的竞争正在从"支持更多协议"走向"更智能的协议选择"**——未来系统需要根据实时网络状况、数据大小、硬件拓扑等因素动态选择最优传输路径，而非静态配置固定协议。
 
 ---
 
@@ -481,6 +507,7 @@ Mooncake TE 的传输能力在广度和深度上均为当前开源项目之最�
 | HiCache | 支持 | 支持 | 有限 | 不支持 | 不支持 |
 | LMCache | 支持 | 支持 | 有限 | 不支持 | 不支持 |
 | HiSparse | 不支持 | 不支持 | 不支持 | 不支持 | 支持（DSA 专项） |
+| Yuanrong Data System | 支持 | 其他机制适配未知 | 其他机制适配未知 | 其他机制适配未知 | 其他机制适配未知 |
 
 #### 适配能力的技术实现差异
 
@@ -499,7 +526,7 @@ Mooncake TE 的传输能力在广度和深度上均为当前开源项目之最�
 
 #### 关键洞察
 
-Mooncake Store 在多注意力机制适配方面建立了明确的领先优势——已有 MHA / GQA / MLA / Hybrid 四种布局处理器，每种有独立的序列化 magic number，形成了可扩展的 Handler 架构。这是 Mooncake Store 相对于其他系统的核心差异化优势之一。随着新注意力机制不断涌现（如 DeepSeek V3.2 和 GLM-5.1 的稀疏注意力、未来可能出现的新型混合注意力），KVCache 存储系统的适配能力将成为关键竞争维度。**注意力机制适配的广度和扩展速度，将直接决定 KVCache 系统的市场覆盖范围**——只支持 MHA / GQA 的系统将无法服务于使用 MLA（DeepSeek 系列）或 Hybrid（Qwen3.5+）的模型用户。对于 openFuyao 而言，为 Mooncake Store 贡献新的布局 Handler（如 DSA Handler）是高价值、低风险的切入点——每种新 Handler 都是可直接合并的独立 PR，既能提升 Mooncake 生态的完整性，又能建立 openFuyao 在注意力机制适配方面的技术影响力。
+Mooncake Store 在多注意力机制适配方面建立了明确的领先优势——已有 MHA / GQA / MLA / Hybrid 四种布局处理器，每种有独立的序列化 magic number，形成了可扩展的 Handler 架构。这是 Mooncake Store 相对于其他系统的核心差异化优势之一。Yuanrong 目前仅确认支持 MHA，对 GQA、MLA、Hybrid、DSA 等新注意力机制的适配状态尚不明确，这在注意力机制快速多样化的趋势下构成潜在短板——随着 DeepSeek V3.2、GLM-5.1、Qwen3.5+ 等新模型的普及，不支持新型注意力机制的系统将无法覆盖这些模型的 KVCache 场景。**注意力机制适配的广度和扩展速度，将直接决定 KVCache 系统的市场覆盖范围**——只支持 MHA / GQA 的系统将无法服务于使用 MLA（DeepSeek 系列）或 Hybrid（Qwen3.5+）的模型用户。对于 openFuyao 而言，为 Mooncake Store 贡献新的布局 Handler（如 DSA Handler）是高价值、低风险的切入点——每种新 Handler 都是可直接合并的独立 PR，既能提升 Mooncake 生态的完整性，又能建立 openFuyao 在注意力机制适配方面的技术影响力。
 
 ---
 
@@ -513,6 +540,7 @@ KVCache 系统的价值最终体现在与推理引擎的集成效果上。集成
 | HiCache | 间接（通过 Mooncake） | 原生（RadixAttention / HiRadixTree） | — |
 | LMCache | 原生（KV Connector 标准实现） | 间接 | — |
 | MemCache | vLLM-Ascend 后端（提案中） | — | — |
+| Yuanrong Data System | vLLM-Ascend KVPool 后端（PR #7649） | — | veRL |
 | openFuyao | vLLM-Ascend | 间接 | InferNex 套件（Hermes-router 等） |
 
 #### 集成深度的三个层次
