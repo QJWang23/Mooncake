@@ -19,7 +19,7 @@ scope: 上游 Mooncake 贡献 + openFuyao 自研体系
 
 - [Section 1: 引言与核心洞察摘要](#section-1-引言与核心洞察摘要)
 - [Section 2: 技术演进趋势](#section-2-技术演进趋势)
-- [Section 3: 生态格局与竞合分析](#section-3-生态格局与竞合分析) <!-- 待撰写 -->
+- [Section 3: 生态格局与竞合分析](#section-3-生态格局与竞合分析)
 - [Section 4: 架构深度对比](#section-4-架构深度对比) <!-- 待撰写 -->
 - [Section 5: openFuyao 差异化定位与突破方向](#section-5-openfuyao-差异化定位与突破方向) <!-- 待撰写 -->
 - [Section 6: 双线规划路线图](#section-6-双线规划路线图) <!-- 待撰写 -->
@@ -278,7 +278,138 @@ KVCache 系统与推理引擎的关系正在从松耦合的独立组件走向深
 
 ---
 
-<!-- Section 3: 生态格局与竞合分析 — 待撰写 -->
+## Section 3: 生态格局与竞合分析
+
+分布式 KVCache 领域已经形成一个多层次的生态系统——底层传输与存储引擎、中间 KVCache 管理层、上层推理引擎集成，以及更上层的云原生编排调度。本节从定位矩阵、竞合关系和关键判断三个维度，客观呈现当前格局，为 openFuyao 的技术定位提供决策依据。
+
+---
+
+### 3.1 定位矩阵
+
+下表从八个维度对五大系统进行横向对比，揭示各系统在生态中的差异化定位：
+
+| 维度 | Mooncake | HiCache + SGLang | LMCache | MemCache | openFuyao / InferNex |
+|------|----------|-------------------|---------|----------|----------------------|
+| **核心定位** | 分布式 KVCache 存储引擎 + 传输引擎 | 分层 KV 缓存系统（RadixAttention 深度集成） | KVCache 管理层（KDN — 知识交付网络） | Ascend NPU 原生分布式 KVCache 引擎 | 云原生 AI 推理基础设施（编排 + 调度 + 存储） |
+| **技术栈层级** | 底层传输 + 存储 | 推理引擎内层 | 推理引擎与存储之间的管理层 | 底层传输 + 存储（Ascend 原生） | 上层编排 + 调度 + 存储 |
+| **推理引擎支持** | vLLM / SGLang / TRT-LLM / LMDeploy | SGLang 原生（RadixAttention 绑定） | vLLM 原生（KV Connector 绑定） | vLLM-Ascend | vLLM / vLLM-Ascend |
+| **硬件生态** | NVIDIA / AMD / Ascend / Moore Threads | NVIDIA（主力） | NVIDIA | Ascend NPU | x86 / ARM / GPU / NPU |
+| **存储层级** | GPU → DRAM → SSD（RDMA） | GPU → CPU → 远程存储 | GPU → CPU → 本地 NVMe → 远程 | 设备 → 主机 → 远程（Ascend RDMA） | 分布式池化存储 |
+| **开源协议** | MIT | Apache 2.0 | Apache 2.0 | 华为内部（未开源） | Apache 2.0 |
+| **社区活跃度** | PyTorch 生态核心项目；FAST 2025 Best Paper；2026.02 正式加入 PyTorch 组织；支撑 Kimi K2 大规模推理 | LMSYS / UC Berkeley 背书；蚂蚁集团、Novita AI、阿里云 Tair 等生产使用；SGLang 社区高速增长 | Tensormesh 公司运营；EuroSys 2025 CacheBlend Best Paper；2025.05 与 Mooncake 战略合作；vLLM 生态重要组成 | 华为内部驱动；vLLM-Ascend 社区 RFC #6410 提案阶段；尚未形成独立开源社区 | 华为 / 中国移动 / 中国联通联盟驱动；v26.03 正式发布；声称 10,000+ 节点调度能力 |
+| **代表用户 / 案例** | Kimi K2（128x H200，224k/288k tokens/sec）；vLLM 官方集成（2026.05） | 蚂蚁集团 DeepSeek-R1-671B（TTFT 降低 84%）；Novita AI；阿里云 Tair | vLLM KV Connector 标准后端；RAG 场景近 100% 命中率 | vLLM-Ascend PD 分离验证（Mooncake 后端） | 中国移动 / 中国联通 AI 推理平台；InferNex PD 感知路由（E2EL 改善 22.08%） |
+
+#### 定位矩阵解读
+
+从矩阵中可以提炼出三个结构性特征：
+
+**第一，技术栈层级分化明显。** Mooncake 和 MemCache 位于底层（传输 + 存储），HiCache 嵌入推理引擎内部，LMCache 位于推理引擎与存储之间的中间层，openFuyao 则定位在上层编排。这五个系统并不完全在同一维度竞争——底层竞争传输效率和硬件覆盖面，中层竞争 KVCache 管理策略和复用效率，上层竞争调度智能和运维自动化。
+
+**第二，推理引擎绑定形成阵营效应。** HiCache 与 SGLang 深度绑定（RadixAttention），LMCache 与 vLLM 深度绑定（KV Connector），Mooncake 则保持引擎中立（同时支持 vLLM、SGLang、TRT-LLM、LMDeploy）。这种绑定关系既是竞争优势（深度集成带来性能优势），也是竞争局限（迁移成本高，生态受限于绑定引擎的市场份额）。
+
+**第三，硬件生态是最大的分化因素。** Mooncake 覆盖 NVIDIA / AMD / Ascend / Moore Threads 四大平台；HiCache 和 LMCache 聚焦 NVIDIA；MemCache 专注 Ascend；openFuyao 追求全平台覆盖但深度有限。在中国市场，硬件多样性不是可选项，这直接影响了各系统的市场空间。
+
+---
+
+### 3.2 竞合关系
+
+以下 Mermaid 图展示了五大系统之间的竞合关系网络：
+
+```mermaid
+graph TD
+    MK[Mooncake<br/>底层传输+存储]
+    HC[HiCache + SGLang<br/>推理引擎内层]
+    LMC[LMCache<br/>KVCache 管理层]
+    MC[MemCache<br/>Ascend 底层存储]
+    OF[openFuyao / InferNex<br/>上层编排调度]
+    HS[HiSparse<br/>稀疏注意力 KVCache]
+
+    %% 合作关系
+    MK <-.->|战略合作<br/>LMCache 作为 vLLM-Mooncake<br/>桥接层 2025.05| LMC
+    MK <-.->|Mooncake Store 是<br/>HiCache 远程存储后端之一| HC
+
+    %% 竞争关系
+    HC <-->|分层缓存竞争<br/>分别绑定 SGLang / vLLM| LMC
+    MK <-->|同类底层存储引擎<br/>不同硬件平台| MC
+
+    %% 上下游关系
+    OF ==>|上游贡献 + 下游集成<br/>热缓存优化已合并上游| MK
+
+    %% 承继关系
+    HS -.->|相同分层理念<br/>应用于稀疏注意力场景| HC
+
+    %% 风格
+    classDef coop fill:#e8f5e9,stroke:#4caf50,stroke-width:2px
+    classDef comp fill:#ffebee,stroke:#f44336,stroke-width:2px
+    classDef supply fill:#e3f2fd,stroke:#2196f3,stroke-width:2px
+    classDef inherit fill:#f3e5f5,stroke:#9c27b0,stroke-width:2px
+    class MK,LMC,HC coop
+    class MC comp
+    class OF supply
+    class HS inherit
+```
+
+#### 3.2.1 合作关系
+
+**Mooncake 与 LMCache 的战略合作（2025.05）** 是当前生态中最具代表性的跨层合作。LMCache 定位为 vLLM 和 Mooncake Store 之间的"桥接层"——vLLM 通过 KV Connector 标准 API 与 LMCache 交互，LMCache 再通过 Mooncake Store 的存储接口进行远程 KVCache 的存取和管理。这一合作关系使得 vLLM 用户无需直接操作 Mooncake Store 的底层 API，降低了集成复杂度。同时，LMCache 在此基础上提供了 CacheBlend（跨请求 KVCache 智能混合）和 256-token 细粒度分块等上层优化能力，与 Mooncake Store 的高性能传输和存储形成互补。实测数据表明，LMCache + Mooncake 在 8xH800 Qwen2.5-72B 上实现了 TTFT 降低 69.1%、吞吐提升 191%。这一合作的战略意义在于：它验证了"底层存储引擎 + 中间管理层"的分层架构在工程上是可行的，且性能收益显著。
+
+**Mooncake 与 HiCache 的后端合作** 体现了极简接口设计的生态价值。HiCache 定义了仅包含 `get` / `exist` / `set` 三个函数的后端接口，Mooncake Store 作为 HiCache 的远程存储后端之一，只需实现这三个函数即可接入。蚂蚁集团在 DeepSeek-R1-671B 上的生产实践正是基于此方案——SGLang 通过 HiCache 接口访问 Mooncake Store 中的远程 KVCache，实现了 84% 的 TTFT 降低。这一合作关系的意义在于：它证明了"推理引擎内层缓存 + 远程存储后端"的分层协作模式可以产生实际的生产价值。
+
+#### 3.2.2 竞争关系
+
+**HiCache 与 LMCache 的分层缓存之争**，本质上是推理引擎生态竞争在 KVCache 领域的映射。两个系统都提供分层 KVCache 管理能力，但技术路线和生态绑定截然不同：
+
+- HiCache 深度绑定 SGLang，核心优势是 RadixAttention 基数树管理，GPU 辅助 I/O 内核实现了 3x cudaMemcpy 吞吐提升，适合 SGLang 生态内的深度优化场景。
+- LMCache 深度绑定 vLLM，核心优势是 CacheBlend 跨请求混合技术和 256-token 细粒度分块，适合 RAG 和共享前缀场景。
+
+两者的竞争格局受制于 vLLM 与 SGLang 之间的推理引擎市场份额竞争。如果 vLLM 保持市场份额领先，LMCache 的生态基础更稳固；如果 SGLang 在特定场景（如 MoE、PD 分离）中快速渗透，HiCache 将获得增长动能。短期内（12 个月内），两者将维持"各自深耕绑定引擎生态、在标准接口层面保持兼容"的竞合态势。
+
+**Mooncake 与 MemCache 的底层存储引擎之争**，是中国市场异构硬件背景下的特殊竞争。两者定位相似（都是底层 KVCache 传输 + 存储引擎），但硬件平台不同：
+
+- Mooncake 追求跨硬件统一抽象（NVIDIA / AMD / Ascend / Moore Threads），通过 Transfer Engine 的多传输协议适配实现硬件无关性。
+- MemCache 专注 Ascend NPU 原生优化，直接利用 `device_rdma` / `sdma` / `host_urma` 等 Ascend 原生互连技术，追求单平台极致性能。
+
+在纯 Ascend 集群场景下，MemCache 的原生优化可能带来性能优势；但在异构混合集群（Ascend + NVIDIA）场景下，Mooncake 的跨平台能力更具价值。值得注意的是，MemCache 目前以 vLLM-Ascend RFC #6410 提案的形式存在，尚未形成独立的开源社区，其长期发展路径仍存在不确定性。
+
+#### 3.2.3 上下游关系
+
+**openFuyao 与 Mooncake 的上下游关系** 是一种兼具贡献与集成的双向关系。openFuyao 团队已向 Mooncake 上游贡献了 Ascend 热缓存优化（hot cache optimization）代码，这些贡献已合并到 Mooncake 主分支，表明 openFuyao 在 Mooncake 生态中的技术参与度正在提升。在下游，openFuyao 的 InferNex 平台集成 Mooncake Store 作为分布式 KVCache 的存储后端，通过 PD KVCache 感知路由实现了 22.08% 的端到端延迟改善。这种"上游贡献 + 下游集成"的双向关系，既让 openFuyao 借力 Mooncake 的技术积累，也通过上游贡献建立了技术影响力。
+
+#### 3.2.4 承继关系
+
+**HiSparse 与 HiCache 的承继关系** 体现了同一技术理念在不同场景下的演化。HiCache 建立了"GPU → CPU → 远程存储"的三层分层缓存模型和 RadixAttention 基数树管理机制；HiSparse 将相同的分层理念应用于稀疏注意力（DSA）场景，核心创新在于只保留"活跃" KV 子集而非全量 KV，在 GLM-5.1 长上下文场景实现了 5x 吞吐提升。两者的承继关系表明：分层缓存是一个可复用的架构模式，可以在不同注意力机制场景下迁移应用。
+
+---
+
+### 3.3 关键判断
+
+基于以上定位矩阵和竞合关系分析，我们提出三个关键判断：
+
+#### 判断 1：底层存储引擎趋于收敛，Mooncake Store 成为主流
+
+**判断结论：** 在 KVCache 底层传输与存储领域，Mooncake Store 正在成为事实标准，其他底层引擎（如 MemCache）将逐步融入 Mooncake 生态或在特定硬件平台上形成补充而非替代。
+
+**证据支撑：** Mooncake 的 Transfer Engine 覆盖了 TCP / RDMA / NVLink / CXL / NVMe-oF / HIP / HCCL / Ascend Direct 等 6+ 传输协议，硬件覆盖面在开源项目中独一无二。2026 年 2 月 Mooncake 正式加入 PyTorch 组织，FAST 2025 Best Paper 的学术认可进一步巩固了其技术权威性。LMCache 与 HiCache 均已将 Mooncake Store 作为远程存储后端，形成"底层统一、上层竞争"的格局。vLLM 官方在 2026 年 5 月正式集成 Mooncake Store（vLLM Blog），标志着主流推理引擎的认可。
+
+**对 openFuyao 的启示：** openFuyao 不应在底层存储引擎上重复造轮子，而应通过持续的上游贡献（Ascend 原生互连优化、新注意力机制布局 Handler）深化与 Mooncake 的绑定，同时在异构 NPU 场景下的深度优化中积累差异化能力。
+
+#### 判断 2：上层管理层（HiCache vs LMCache）继续竞争，本质是推理引擎生态竞争
+
+**判断结论：** HiCache 与 LMCache 的竞争短期内不会收敛，两者的竞争格局将跟随 vLLM 与 SGLang 的市场份额演变，KVCache 管理层的统一标准短期内难以形成。
+
+**证据支撑：** HiCache 深度绑定 SGLang 的 RadixAttention，GPU 辅助 I/O 内核等核心优化与 SGLang 内部数据结构紧密耦合，迁移到 vLLM 的成本极高。LMCache 深度绑定 vLLM 的 KV Connector 和 CacheBlend 技术，同样与 vLLM 调度逻辑紧密耦合。两者的差异化价值（RadixAttention 基数树 vs CacheBlend 智能混合）服务于不同的工作负载模式，没有明显的"一方胜出"的技术逻辑。SGLang 与 vLLM 作为两大开源推理引擎，短期内市场份额不会出现根本性变化。
+
+**对 openFuyao 的启示：** openFuyao 的编排层应同时兼容 HiCache 和 LMCache 的接口，避免绑定单一推理引擎生态。在异构 NPU 场景下，可以通过 vLLM-Ascend 生态切入 LMCache 兼容路径，同时关注 SGLang 对 Ascend 的支持进展。
+
+#### 判断 3：异构硬件是中国市场独特变量，NPU 生态需要独立但与 GPU 互通的方案
+
+**判断结论：** 中国市场的异构硬件需求（Ascend NPU + NVIDIA GPU 混合部署）是区别于全球市场的独特变量，需要既具备 NPU 原生优化能力、又能与 GPU 生态互通的 KVCache 方案。
+
+**证据支撑：** 受地缘政治因素影响，中国企业普遍面临 Ascend + NVIDIA 混合集群的部署需求，这种场景在全球市场几乎不存在。MemCache 专注 Ascend 原生优化但尚未开源，且缺乏跨硬件互通能力；Mooncake 虽然支持 Ascend，但主要通过 HCCL 封装层，尚未充分利用 Ascend 的底层互连能力（device_rdma / sdma / host_urma）。目前没有任何开源系统在"Ascend 原生深度优化 + 跨硬件互通"这两个维度上同时达到生产级水平——这是一个明确的技术空白。
+
+**对 openFuyao 的启示：** openFuyao 应聚焦于"Ascend 原生深度优化"这一差异化方向，通过 Ascend Direct Transport 的深度优化填补 Mooncake 尚未覆盖的性能空间，同时利用 Mooncake 的跨硬件抽象层实现与 GPU 生态的互通。这一"深度优化 NPU + 互通 GPU"的定位，既有技术壁垒（需要 NPU 原生互连的深度知识），又有生态价值（填补 Mooncake 的 Ascend 性能短板）。
+
+---
 
 <!-- Section 4: 架构深度对比 — 待撰写 -->
 
