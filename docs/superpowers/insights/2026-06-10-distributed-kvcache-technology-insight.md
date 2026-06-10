@@ -23,6 +23,7 @@ scope: 上游 Mooncake 贡献 + openFuyao 自研体系
 - [Section 4: 架构深度对比](#section-4-架构深度对比)
 - [Section 5: openFuyao 差异化定位与突破方向](#section-5-openfuyao-差异化定位与突破方向)
 - [Section 6: 双线规划路线图](#section-6-双线规划路线图)
+- [Section 7: 上游席位获取策略](#section-7-上游席位获取策略)
 
 ---
 
@@ -1057,6 +1058,155 @@ gantt
 - **甘特图时间线**直观展示了两条线的并行推进节奏和里程碑交汇点。
 
 这条双线路线图的核心逻辑是：**通过上游贡献建立技术影响力（"借船出海"），通过自研体系构建差异化护城河（"造船远航"），两条线相互支撑、协同推进，最终在 2027 Q2 交付完整的云原生 KVCache 治理平台。**
+
+---
+
+## Section 7: 上游席位获取策略
+
+本节基于技术趋势洞察和竞争格局分析，结合 sig-ai-inference 的实际社区贡献基础，制定 Mooncake 上游席位的获取路径和策略。
+
+---
+
+### 7.1 席位价值与战略意义
+
+**CODEOWNERS 权限的价值**：
+- 对 `/mooncake-store` 目录下的 PR 有 merge 权限
+- 参与模块方向决策和技术路线制定
+- 社区技术影响力的正式认可
+
+**对 openFuyao 的战略意义**：
+- 通过上游席位引导 Mooncake 的 NPU 适配方向，确保 Ascend 支持成为核心路线图
+- 在 Yuanrong 竞争中建立"OpenEuler/openFuyao <-> Mooncake"的官方合作通道
+- 以 Mooncake 席位为基础，向 openFuyao 技术委员会和 K8s 社区扩展影响力
+
+---
+
+### 7.2 当前社区位置与竞争态势
+
+**当前贡献基础**：
+- 5+ PR 已提交到 Mooncake 上游（热点缓存优化、NPU 适配层）
+- Store 模块热点缓存优化实现 TTFT 降低 55-93%（v25.12）
+- 跨节点延迟从 881ms 降至 287ms（67% 降低）
+- 与灵衢团队建立联合验证合作
+
+**Store 模块 CODEOWNERS 格局**：
+
+| CODEOWNER | 归属组织 | 提交活跃度 |
+|-----------|---------|-----------|
+| @ykwd (Ke Yang) | Approaching AI | Store 主负责人 |
+| @stmatengss (Teng Ma) | 阿里云 | LLM 生态合作 |
+| @XucSh | Approaching AI | — |
+| @YiXR | 阿里云 | — |
+
+**高贡献竞争者**：JinYan Su (100 commits/6mo)、Feng Ren (94 commits/6mo)
+
+**关键判断**：Store 模块已有 4 位 CODEOWNER，接纳新成员的门槛相对较低。但需要通过差异化贡献（NPU 优化、布局处理器）而非正面竞争来建立影响力。
+
+---
+
+### 7.3 技术切入点与差异化贡献路径
+
+基于本文的技术趋势分析，选择以下差异化贡献方向：
+
+**切入点 1：KVCache Layout Handler（最高优先级）**
+- 对应趋势 2（注意力机制多样化）
+- 技术前沿：Qwen3.5/DeepSeek 等 new models 采用 Hybrid Attention (GQA+MLA+GDN)
+- 竞争少：目前仅 @ykwd 深度理解这块，缺乏第二位专家
+- 已有基础：GQA/MLA/Hybrid Layout Handler 代码框架已完成
+- 行动：发起 RFC -> 提交 PR -> 成为该方向的社区专家
+
+**切入点 2：Ascend NPU Tiered-Cache 适配**
+- 对应趋势 3（异构硬件生态）
+- Mooncake 的 Ascend 支持主要通过 HCCL 封装层，尚未充分利用底层互连能力
+- 与灵衢团队联合验证，提供差异化性能数据
+- 行动：提交 NPU 适配层优化 PR -> 提供灵衢联合性能基准
+
+**切入点 3：热点缓存架构演进**
+- 对应趋势 1（存储层级深化）
+- 已有 5+ PR 基础，可主导热点缓存模块的架构演进讨论
+- 行动：提出下一版本性能目标并主导实现
+
+**切入点 4：稀疏注意力布局处理器**
+- 对应 HiSparse 技术方向，填补 Mooncake 在稀疏注意力适配方面的空白
+- 竞争空白：目前无其他贡献者在此方向发力
+- 行动：参考 HiSparse 设计，贡献 DSA 布局处理器原型
+
+---
+
+### 7.4 三阶段获取路径
+
+**阶段一：核心贡献者确立（Q2-Q3 2026）**
+
+| 行动 | 目标 | 验收标准 |
+|------|------|----------|
+| 发起 RFC: KVCache Layout Handler for Hybrid Attention | 展示设计深度 | RFC 获得 @ykwd/stmatengss 回复 |
+| 提交 Layout Handler PR | 核心功能代码合并 | GQA/MLA/Hybrid 三种处理器合并 |
+| 持续热点缓存贡献 | Store 模块 Top 5 贡献者 | 累计 15+ Store commits |
+| 主动 Review 他人 PR | 建立技术信任 | Review 5+ Store PR |
+
+**阶段二：模块主导权申请（Q3-Q4 2026）**
+
+| 行动 | 目标 | 验收标准 |
+|------|------|----------|
+| 主导热点缓存架构演进讨论 | 成为该方向意见领袖 | RFC 获得社区采纳 |
+| 提交 NPU 适配层 PR | Ascend 支持成为官方分支 | PR 合并 + CI 通过 |
+| 稀疏注意力布局处理器 | 填补社区空白 | DSA 处理器 PR 提交 |
+| 联合灵衢提供性能基准 | 生产级性能验证 | 公开发布 NPU 性能数据 |
+
+**阶段三：CODEOWNERS 申请（Q4 2026 - Q1 2027）**
+
+触发条件（需同时满足）：
+- 累计 20+ Store 相关 commits
+- 获得 @ykwd 或 @stmatengss 的公开认可
+- 有 3+ 个重大 PR 作为代表作（Layout Handler、热点缓存优化、NPU 适配）
+- 持续 review 他人 PR（10+ 次）
+
+---
+
+### 7.5 Yuanrong 竞争因素对席位策略的影响
+
+Yuanrong 作为 Ascend NPU 场景的直接竞争对手，对 Mooncake 上游席位策略产生双重影响：
+
+**正面影响**：
+- Yuanrong 的竞争压力为 openFuyao 的 Mooncake 贡献提供了额外动力——Mooncake 社区也需要 Ascend 生态的贡献者来巩固其跨硬件优势
+- 通过在 Mooncake 社区证明 NPU 优化的价值，可以帮助 Mooncake 在与 Yuanrong 的竞争中保持 Ascend 支持，形成"共赢"
+
+**风险因素**：
+- 如果 Yuanrong 在 Ascend 性能上大幅领先，Mooncake 社区可能降低对 NPU 优化的优先级
+- 应对：通过持续高质量贡献保持影响力，确保 NPU 适配是 Mooncake 核心路线图的一部分
+
+**策略调整**：
+- 在 Mooncake 社区中强调"跨硬件统一"而非"Ascend 专属"的定位，避免被视为利益驱动
+- 将灵衢总线优化作为"硬件多样性"的贡献来呈现，而非与 Yuanrong 竞争的手段
+
+---
+
+### 7.6 关键人物关系策略
+
+| 人物 | 角色 | 建立联系方式 |
+|------|------|-------------|
+| @ykwd (Ke Yang) | Store 主负责人 | RFC 主动 @，PR 中展示设计深度，Layout Handler 方向主动沟通 |
+| @stmatengss (Teng Ma) | 阿里云 LLM 生态 | Integration 相关 PR 中协作，vLLM 集成方向对齐 |
+| @XucSh | Store CODEOWNER | 作为第二 reviewer |
+| @alogfans | Transfer Engine CODEOWNER | NPU 适配层涉及 TE 时协同 |
+
+---
+
+### 7.7 成功指标
+
+| 指标 | 当前 | Q3 目标 | Q4 目标 |
+|------|------|--------|--------|
+| Store commits | ~10 | 20+ | 35+ |
+| Merged PRs | ~5 | 10+ | 18+ |
+| Reviewed PRs | 0 | 5+ | 10+ |
+| RFC 参与 | 0 | 2+ | 4+ |
+| CODEOWNERS 认可 | 无 | 1 位认可 | 正式申请 |
+
+---
+
+### 7.8 本章小结
+
+本章从席位价值、竞争态势、技术切入点、三阶段获取路径、Yuanrong 竞争因素和关键人物关系六个维度，制定了 Mooncake 上游席位的获取策略。核心逻辑是：**通过差异化贡献（Layout Handler、NPU 优化、稀疏注意力适配）而非正面竞争来建立技术影响力，利用 Mooncake 社区对 Ascend 生态贡献者的需求窗口，在三阶段路径中逐步确立 CODEOWNERS 地位。** Yuanrong 的竞争压力既是风险也是动力——通过在 Mooncake 社区中证明 NPU 优化的价值，可以帮助 Mooncake 在跨硬件竞争中保持 Ascend 支持，实现 openFuyao 与 Mooncake 的共赢。
 
 ---
 
