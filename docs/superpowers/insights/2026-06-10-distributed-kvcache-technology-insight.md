@@ -411,7 +411,137 @@ graph TD
 
 ---
 
-<!-- Section 4: 架构深度对比 — 待撰写 -->
+## Section 4: 架构深度对比
+
+Section 3 从生态格局角度分析了各系统的定位与竞合关系。本节从技术架构维度切入，聚焦存储层级设计、传输引擎能力、注意力机制适配和推理引擎集成深度四个核心维度，深入对比各系统的设计取舍与工程实现差异。理解这些底层架构差异，是评估技术选型和规划贡献方向的关键基础。
+
+---
+
+### 4.1 存储层级设计对比
+
+存储层级是 KVCache 系统的骨架——它决定了数据在不同介质间的流转方式、淘汰策略和性能上限。四大系统在层级数、层级定义、淘汰策略和层间迁移方式上呈现出显著差异：
+
+| 系统 | 层级数 | 层级定义 | 淘汰策略 | 层间迁移 | 关键创新 |
+|------|--------|----------|----------|----------|----------|
+| Mooncake Store | 3 | HBM -> DRAM -> SSD | 应用控制 | RDMA 传输 | 多 NIC 带宽聚合、拓扑感知路径选择 |
+| HiCache | 3 | GPU -> CPU -> 远程存储 | 分层重叠 + 预取 | GPU 辅助 I/O 内核（3x cudaMemcpy） | HiRadixTree 页表管理、可配置写策略（write-through / write-back） |
+| LMCache | 4 | GPU -> CPU -> 本地 NVMe -> 远程 | LRU + 256-token 分块 | 异步 + NUMA 感知分配 | CacheBlend 跨请求混合、NVMe GDS 直通 |
+| MemCache | 3 | 设备 -> 主机 -> 远程 | 多副本负载均衡 | Ascend 互连（SDMA / RDMA） | device_rdma / device_sdma / host_urma 原生互连 |
+
+#### 层级架构的设计取舍
+
+**Mooncake Store** 采用经典的 3 层架构（HBM -> DRAM -> SSD），但通过 Transfer Engine 的拓扑感知路径选择实现了独特优势。Mooncake 的淘汰策略由应用层控制，这意味着推理引擎可以根据工作负载特征（如请求的优先级、重复访问概率）灵活决定 KVCache 的生命周期。层间迁移通过 RDMA 实现，多 NIC 带宽聚合使得跨节点传输不再是性能瓶颈。这种"应用控制 + RDMA 加速"的组合，在 PD 分离场景下尤其高效——Prefill 节点产生的 KVCache 可以通过 RDMA 高速推送到 Decode 节点的 DRAM 或 SSD 层。
+
+**HiCache** 同样采用 3 层架构，但在层间迁移方式上实现了突破性创新。其 GPU 辅助 I/O 内核将数据搬运逻辑从 CPU 卸载到 GPU SM（Streaming Multiprocessor）上执行，实测吞吐达到标准 `cudaMemcpy` 的 3 倍。这一创新的关键意义在于：它将 CPU DRAM 层从"低效的中间缓存"转变为"高效的扩展存储"，使得 3 层架构的整体性价比大幅提升。此外，HiCache 的 HiRadixTree 页表管理机制将 KVCache 的存储粒度精确对齐到 RadixAttention 的叶子节点，实现了存储管理与推理引擎内部数据结构的无缝衔接。可配置的写策略（write-through / write-back）则允许用户在数据一致性和写入性能之间灵活权衡。
+
+**LMCache** 在 3 层基础上引入了第 4 层——本地 NVMe，并通过 GPUDirect Storage（GDS）实现 GPU 到 NVMe 的直通访问，绕过 CPU 中转。这一设计在大规模持久化场景（如 RAG 共享前缀、长上下文对话历史）中具有独特价值。LMCache 的 256-token 细粒度分块策略与 LRU 淘汰策略配合，使得只有实际被访问的 KV 块才会被加载，大幅提高了 RAG 等场景的复用效率。NUMA 感知分配确保了在多路 CPU 服务器上，KVCache 数据被分配在距离目标 GPU 最近的 NUMA 节点上，减少了跨 NUMA 访问的延迟开销。
+
+**MemCache** 针对 Ascend NPU 的硬件特性定义了 3 层架构（设备 -> 主机 -> 远程），并通过 `device_rdma`、`device_sdma`、`host_urma` 等 Ascend 原生互连技术实现层间迁移。其中 `device_rdma` 允许 NPU 设备直接发起 RDMA 操作，`device_sdma` 提供设备间的高速直接内存访问，`host_urma` 则提供主机侧的用户态 RDMA 能力。这种"原生互连优先"的设计在纯 Ascend 集群场景下可能带来显著性能优势，但也意味着与 GPU 生态的互通需要额外的协议转换层。
+
+#### 关键洞察
+
+HiCache 的 GPU 辅助 I/O 内核是当前所有系统中最为独特的存储层创新——它改变了数据搬运的计算模型（从 CPU 搬运到 GPU 自搬运），而非仅仅优化搬运参数。LMCache 的 NVMe GDS 层和 NUMA 感知分配使其在大规模持久化场景中具有差异化优势，特别是对于需要长期保存 KVCache 的 RAG 和多轮对话场景。MemCache 的 Ascend 原生互连在 NPU 场景下拥有硬件直连优势，但这一优势目前受限于 Ascend 生态的覆盖范围和社区成熟度。总体而言，层级数的差异（3 层 vs 4 层）并非关键竞争维度，**层间迁移效率和淘汰策略的智能化程度**才是决定存储层级性能上限的核心因素。
+
+---
+
+### 4.2 传输引擎设计对比
+
+传输引擎是 KVCache 系统的血脉——它决定了数据在不同节点、不同硬件之间流转的速度和可靠性。各系统在传输协议覆盖、关键能力和独特优势上差异显著：
+
+| 系统 | 支持后端 / 协议 | 关键能力 | 独特优势 |
+|------|----------------|----------|----------|
+| Mooncake TE | TCP / RDMA（InfiniBand / RoCEv2 / eRDMA / GPUDirect） / NVLink / CXL / NVMe-oF + 异构（HCCL / ADXL / HIP / MUSA） | 拓扑感知路径选择、多 NIC 聚合、零拷贝、连接池 SIEVE 算法 | 最广泛的传输协议覆盖（10+ 种），单一代码库支持 4+ 异构硬件平台 |
+| HiCache | 插件式后端（3 函数接口：get / exist / set） | Mooncake Store / DeepSeek 3FS / NVIDIA NIXL / 本地文件 | 极简接口设计，新后端接入仅需 3 个函数 |
+| LMCache | NIXL / Redis / Mooncake Store / InfiniStore | 点对点通道、Pinned Memory 传输 | 存储模式（持久化卸载） + 传输模式（PD 解耦）双模 |
+| MemCache | MemFabric（device_rdma / device_sdma / host_rdma / host_urma） | Ascend 原生互连、Kunpeng URMA | Ascend NPU 底层硬件直连优化 |
+
+#### 传输能力的设计哲学差异
+
+**Mooncake Transfer Engine（TE）** 在传输能力上具有压倒性的广度优势。从源码分析来看，其传输实现覆盖了 TCP（通用兜底）、RDMA（InfiniBand / RoCEv2 / eRDMA / GPUDirect，高性能场景主力）、NVLink（GPU 间高速互联）、CXL（共享内存语义）、NVMe over Fabric（远程存储访问）等多种协议，同时通过 HCCL Transport、ADXL Direct Transport、HIP Transport、MUSA Transport 适配华为 Ascend、AMD GPU、Moore Threads GPU 等异构硬件平台。这种广覆盖的实现复杂度极高——每种传输协议都有不同的内存注册、连接管理和错误处理机制。Mooncake TE 通过拓扑感知路径选择（根据源-目标节点的 NUMA 亲和性和网络拓扑自动选择最优传输路径）和多 NIC 带宽聚合（将多个网卡的带宽叠加用于单次传输）在工程上实现了这些协议的统一管理。连接池采用 SIEVE 算法（一种高效的近似 LRU 替换算法）管理海量连接，避免频繁建立/拆除 RDMA 连接的开销。
+
+**HiCache** 选择了完全不同的设计哲学——它不自己实现传输协议，而是定义了极简的插件式后端接口（`get` / `exist` / `set` 三个函数），将传输实现委托给后端存储系统。这种设计使得 HiCache 可以快速接入多种存储后端（Mooncake Store、DeepSeek 3FS、NVIDIA NIXL、本地文件系统），且每种后端可以充分发挥自身的传输优势。新后端的接入成本极低（仅需实现 3 个函数），这促进了生态繁荣。但这一设计的局限在于：HiCache 无法感知后端的传输拓扑和带宽状况，无法做跨后端的智能调度。
+
+**LMCache** 提供了"存储模式"和"传输模式"两种工作模式。存储模式将 KVCache 持久化卸载到远程存储（如 Redis、Mooncake Store），适合长期保存和跨请求复用；传输模式则实现 PD 解耦场景下 Prefill 节点到 Decode 节点的直接 KVCache 传输，适合实时推理场景。Pinned Memory 传输确保了 KVCache 在 CPU DRAM 中的物理页面锁定，避免操作系统页面置换导致的传输延迟抖动。LMCache 通过 NIXL（NVIDIA 的统一传输库）获得高性能 RDMA 传输能力。
+
+**MemCache** 的 MemFabric 传输层专为 Ascend NPU 生态设计，直接利用 `device_rdma`（设备侧 RDMA）、`device_sdma`（设备间直接内存访问）、`host_rdma`（主机侧 RDMA）、`host_urma`（Kunpeng 处理器用户态 RDMA）等 Ascend 原生互连技术。这种硬件直连方式绕过了通用传输抽象层的开销，在纯 Ascend 集群中可以实现接近硬件极限的传输性能。但这一优势以牺牲跨硬件平台的可移植性为代价。
+
+#### 关键洞察
+
+Mooncake TE 的传输能力在广度和深度上均为当前开源项目之最——10+ 种传输协议和 4+ 种异构硬件平台的覆盖，使其成为"传输层事实标准"的有力候选。HiCache 的插件式设计虽然传输能力有限，但其极简接口（3 函数模型）大幅降低了新存储后端的集成门槛，从工程实践角度看，这是一种"以接口换生态"的有效策略。MemCache 在 Ascend 原生互连上的独特优势使其在国产 NPU 场景下具有不可替代性，但这一优势目前受限于 Ascend 生态的独立性和社区规模。**传输引擎的竞争正在从"支持更多协议"走向"更智能的协议选择"**——未来系统需要根据实时网络状况、数据大小、硬件拓扑等因素动态选择最优传输路径，而非静态配置固定协议。
+
+---
+
+### 4.3 注意力机制适配对比
+
+注意力机制的快速多样化是 KVCache 系统面临的核心技术挑战——不同注意力机制产生的 KVCache 在数据布局、维度、对齐方式上完全不同，存储系统必须提供灵活的布局适配能力。下表展示各系统对不同注意力机制的支持情况：
+
+| 系统 | MHA | GQA | MLA | Hybrid（滑动窗口） | 稀疏注意力（DSA） |
+|------|-----|-----|-----|-------------------|-------------------|
+| Mooncake Store | 支持（MHAC） | 支持（GACK） | 支持（MLAC） | 支持（HYBD） | 规划中 |
+| HiCache | 支持 | 支持 | 有限 | 不支持 | 不支持 |
+| LMCache | 支持 | 支持 | 有限 | 不支持 | 不支持 |
+| HiSparse | 不支持 | 不支持 | 不支持 | 不支持 | 支持（DSA 专项） |
+
+#### 适配能力的技术实现差异
+
+**Mooncake Store** 在多注意力机制适配方面建立了当前最完善的工程实践。从代码分析来看，Mooncake Store 实现了抽象基类 `KVCacheLayoutHandler`，提供统一的 `serialize` / `deserialize` / `calculateSerializedSize` / `validate` 接口，并提供了四种具体实现：
+
+- `MHALayoutHandler` — 传统多头注意力布局，序列化 magic number 为 `MHAC`（Multi-Head Attention Cache）
+- `GQALayoutHandler` — 分组查询注意力布局，magic number 为 `GACK`（Grouped-Attention Cache KV），处理 KV 组内共享和组对齐
+- `MLALayoutHandler` — 压缩潜在向量布局，magic number 为 `MLAC`（Multi-head Latent Attention Cache），处理 DeepSeek 系列模型的低维潜在向量存储
+- `HybridLayoutHandler` — 混合 / 滑动窗口布局，magic number 为 `HYBD`（Hybrid），支持 `[header][metadata_json][windowed_kv_data]` 存储格式，处理同一模型内部不同层使用不同注意力模式的复杂场景
+
+这种 Handler 模式确保了新注意力机制可以通过新增 Handler 来支持，而无需修改存储引擎核心逻辑。每种布局处理器拥有独立的序列化 magic number，使得存储引擎可以在反序列化时自动识别 KVCache 的布局类型，实现了格式自描述。
+
+**HiCache 和 LMCache** 对 MLA 的支持有限——主要是因为 MLA 的压缩潜在向量格式与传统的 KV 格式差异较大，需要专门的解压 / 压缩逻辑。两者均不支持 Hybrid 模型（滑动窗口 + 全局注意力交替），这一限制与它们的推理引擎绑定有关：SGLang 和 vLLM 对 Hybrid 模型的 KVCache 管理支持尚在开发中。两者也均不支持稀疏注意力（DSA）。
+
+**HiSparse** 是 DSA（Dynamic Sparse Attention）的专项解决方案，它精准地只保留被注意力模式选中的"活跃" KV 子集，丢弃或降级非活跃 KV。在 GLM-5.1 长上下文场景实现了 5x 吞吐提升。但 HiSparse 的设计完全围绕 DSA 展开，不支持其他注意力机制。
+
+#### 关键洞察
+
+Mooncake Store 在多注意力机制适配方面建立了明确的领先优势——已有 MHA / GQA / MLA / Hybrid 四种布局处理器，每种有独立的序列化 magic number，形成了可扩展的 Handler 架构。这是 Mooncake Store 相对于其他系统的核心差异化优势之一。随着新注意力机制不断涌现（如 DeepSeek V3.2 和 GLM-5.1 的稀疏注意力、未来可能出现的新型混合注意力），KVCache 存储系统的适配能力将成为关键竞争维度。**注意力机制适配的广度和扩展速度，将直接决定 KVCache 系统的市场覆盖范围**——只支持 MHA / GQA 的系统将无法服务于使用 MLA（DeepSeek 系列）或 Hybrid（Qwen3.5+）的模型用户。对于 openFuyao 而言，为 Mooncake Store 贡献新的布局 Handler（如 DSA Handler）是高价值、低风险的切入点——每种新 Handler 都是可直接合并的独立 PR，既能提升 Mooncake 生态的完整性，又能建立 openFuyao 在注意力机制适配方面的技术影响力。
+
+---
+
+### 4.4 推理引擎集成深度对比
+
+KVCache 系统的价值最终体现在与推理引擎的集成效果上。集成深度决定了 KVCache 系统能在多大程度上参与推理调度的决策过程，而非仅仅作为被动的存储服务。下表对比各系统与主流推理引擎的集成情况：
+
+| 系统 | vLLM | SGLang | 其他引擎 |
+|------|------|--------|----------|
+| Mooncake Store | KV Connector（官方集成 2026.05） | HiCache 远程存储后端 | TRT-LLM / LMDeploy / TensorOpt |
+| HiCache | 间接（通过 Mooncake） | 原生（RadixAttention / HiRadixTree） | — |
+| LMCache | 原生（KV Connector 标准实现） | 间接 | — |
+| MemCache | vLLM-Ascend 后端（提案中） | — | — |
+| openFuyao | vLLM-Ascend | 间接 | InferNex 套件（Hermes-router 等） |
+
+#### 集成深度的三个层次
+
+从上表可以看出，推理引擎集成正在从"接口层对接"走向"语义层协作"，形成三个清晰的层次：
+
+**第一层：接口层集成（put / get 抽象）。** Mooncake Store 与 vLLM 的 KV Connector 集成属于这一层次——vLLM 通过标准化的 KV Connector API（`save_kv` / `load_kv` / `drop_kv`）与 Mooncake Store 交互，Mooncake Store 作为被动存储服务响应读写请求。这种集成方式的优点是引擎与存储完全解耦，更换存储后端无需修改推理引擎代码；缺点是存储系统无法参与调度决策，无法实现"注意力感知"的优化。2026 年 5 月 vLLM 官方博客宣布集成 Mooncake Store，标志着这一层次已成为 KVCache 系统与推理引擎集成的最低标准。
+
+**第二层：框架层集成（数据结构绑定）。** HiCache 与 SGLang 的 RadixAttention / HiRadixTree 集成属于这一层次——HiCache 的缓存粒度精确对齐到 Radix Tree 的叶子节点，存储系统与推理引擎内部的数据结构紧密耦合。这种集成方式实现了更高的复用效率（多个请求共享公共前缀的 KVCache 时无需重复存储），但也带来了更高的迁移成本（HiCache 的核心优化与 SGLang 内部实现深度绑定，无法直接移植到 vLLM）。类似地，LMCache 与 vLLM 的 KV Connector 深度绑定也属于这一层次——LMCache 的 CacheBlend 技术需要理解 vLLM 的请求调度逻辑才能实现跨请求 KVCache 的智能混合。
+
+**第三层：语义层集成（注意力感知决策）。** 这是当前集成深度的前沿——KVCache 系统不仅存储和传输数据，还参与推理调度的决策过程。例如，推理引擎调度器在做出批次决策之前，查询远程 KVCache 的可用性，根据命中情况调整调度策略（跳过已有 KVCache 的 prefill 阶段、优先调度命中率高的请求）。vLLM 的 KV Connector 框架为这一层次的集成提供了架构基础，但当前实现仍以第一层（接口层集成）为主。SGLang 的 RadixAttention 则在第二层（数据结构绑定）的基础上，部分实现了语义层的调度优化。
+
+#### 关键洞察
+
+推理引擎集成正从"put / get 接口"向"注意力感知决策"演进，这一演进趋势对 KVCache 系统的架构设计提出了新的要求。SGLang 的 RadixAttention（基数树管理 KVCache 生命周期）和 vLLM 的 KV Connector（标准化 KVCache 传输接口）代表两种不同的集成哲学——前者将缓存管理嵌入推理引擎内部，通过数据结构的深度绑定实现极致的复用效率；后者通过标准化接口实现引擎与缓存的解耦，通过接口的灵活性支持多种存储后端。这两种哲学并非对立，而是服务于不同场景：RadixAttention 适合单引擎深度优化场景（如 SGLang 的共享前缀优化），KV Connector 适合多引擎异构部署场景（如同时使用 vLLM + SGLang 的生产环境）。**对于 openFuyao，双引擎兼容（同时支持 vLLM KV Connector 和 SGLang HiCache 接口）是编排层的必要能力**，但在异构 NPU 场景下，与 vLLM-Ascend 的 KV Connector 集成是更现实的第一步——因为 vLLM-Ascend 是当前 Ascend NPU 上最成熟的推理引擎方案。
+
+---
+
+### 4.5 架构对比综合洞察
+
+综合以上四个维度的对比分析，可以提炼出三个层面的架构洞察：
+
+**第一，没有"全面最优"的单一系统。** Mooncake Store 在传输协议覆盖和注意力机制适配上领先，但在存储层级深度（HiCache 的 GPU 辅助 I/O、LMCache 的 NVMe GDS 层）和引擎集成深度（HiCache 的 RadixAttention 绑定、LMCache 的 CacheBlend）上并非最强。这种"各有长短"的格局验证了分层协作的合理性——底层存储引擎、中间管理层、上层编排层各司其职，通过标准接口实现互联。
+
+**第二，可扩展性比单点性能更具长期价值。** Mooncake Store 的 Handler 模式（可插拔布局适配）和 HiCache 的 3 函数接口（可插拔存储后端）都体现了"以扩展性换取生态"的设计哲学。在注意力机制和硬件平台都在快速变化的背景下，系统的适应能力比当前的性能数字更重要。
+
+**第三，异构硬件是架构分化的最大变量。** MemCache 的 Ascend 原生互连、Mooncake TE 的多平台适配、openFuyao 的异构编排——这三者分别代表了异构场景下"深度优化单平台"、"广度覆盖多平台"、"智能调度跨平台"三种不同的架构应对策略。在中国市场的现实约束下，这三种策略并非竞争关系，而是互补关系——深度优化提供单平台极致性能，广度覆盖确保跨平台可用性，智能调度实现全局最优。
+
+---
 
 <!-- Section 5: openFuyao 差异化定位与突破方向 — 待撰写 -->
 
