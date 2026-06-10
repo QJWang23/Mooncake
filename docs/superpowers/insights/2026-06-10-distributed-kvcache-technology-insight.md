@@ -595,6 +595,10 @@ Mooncake 拥有 FAST 2025 Best Paper 的学术背书，2026 年 2 月正式加�
 
 openFuyao 与 Ascend 硬件生态存在较强的绑定关系，这在国产化推理场景下是优势，但在异构集群（Ascend + NVIDIA 混合部署）场景下可能成为限制。目前 openFuyao 主要通过 vLLM / vLLM-Ascend 进行推理引擎集成，对 SGLang 的支持有限。而 Section 3 的生态分析表明，SGLang + HiCache 是 KVCache 分层缓存的重要生态路线，对 SGLang 的支持缺失意味着 openFuyao 无法覆盖这一生态的用户。此外，"Ascend Prefill + NVIDIA Decode"这种异构推理场景需要 KVCache 在不同硬件平台间的高效格式转换和传输，openFuyao 在这方面的能力建设尚处于起步阶段。
 
+**差距五：Yuanrong 竞争压力——Ascend 市场存在直接竞争对手。**
+
+Yuanrong Data System（华为 openEuler 社区项目）是 Ascend NPU 场景的直接竞争对手，同为 vLLM-Ascend KV Pool 后端选项。Yuanrong 具备以下竞争优势：SIGCOMM 2024 论文背书（学术界权威认可）、分布式元数据架构（更适合 10,000+ 卡规模的超大规模部署）、UB 总线原生优化（华为鲲鹏处理器与 Ascend NPU 之间的高速互连优化，实现 48GB/s H2H 带宽）。Yuanrong 与 Mooncake 在 Ascend 市场形成直接竞争，openFuyao 需要明确与两者的分工定位，避免陷入"三方竞争"的战略模糊。
+
 #### 5.1.3 诊断总结
 
 将优势和差距并置，可以看到一个清晰的模式：openFuyao 的优势集中在上层编排和 NPU 生态适配，差距集中在底层存储深度优化和跨生态互通。这一模式指向一个自然的技术定位——openFuyao 不应在底层存储引擎上与 Mooncake 正面竞争，而应在上层编排和异构 NPU 深度优化上构建差异化优势，同时通过上游贡献深化与 Mooncake 的技术绑定。
@@ -654,6 +658,16 @@ openFuyao 通过上游贡献（NPU 优化、热缓存、新注意力机制 Handl
 
 MemCache 专注 Ascend NPU 的原生互连优化（`device_rdma` / `device_sdma` / `host_urma`），追求单平台极致性能。openFuyao 专注 Ascend 之上的编排调度和云原生治理。两者在 Ascend 生态中形成互补而非竞争——MemCache 提供 Ascend 底层存储引擎，openFuyao 在其上构建编排层。如果 MemCache 的 Ascend 原生互连优化成熟并开源，openFuyao 可以将其作为 InferNex 在纯 Ascend 集群场景下的存储后端，与 Mooncake Store 形成按场景选择的双后端架构。
 
+**与 Yuanrong 的定位差异：Yuanrong 定位为 Serverless 数据子系统，openFuyao 定位为云原生编排层。**
+
+Yuanrong Data System 是华为 openEuler 社区孵化的分布式数据服务项目，其核心定位是提供 Serverless 级别的分布式存储能力，在 KVCache 场景下定位为底层存储引擎（与 Mooncake Store 同层级）。openFuyao 与 Yuanrong 在 Ascend 生态中可以形成互补而非完全竞争的关系：Yuanrong 提供底层存储能力（分布式元数据管理、UB 总线高速传输），openFuyao 提供上层调度治理能力（智能路由、云原生生命周期管理、异构集群编排）。两者在技术栈层级上不重叠，可以通过接口集成形成"Yuanrong 存储 + openFuyao 编排"的联合方案。
+
+**竞争应对策略：在 KVPool 后端竞争中，openFuyao 应支持多后端选择（Mooncake / Yuanrong / MemCache），避免绑定单一后端。** 具体而言：
+
+- 在纯 Ascend 场景下，支持 Yuanrong 和 MemCache 作为可选存储后端，利用其 UB 总线和原生互连优势；
+- 在跨硬件（Ascend + NVIDIA）场景下，以 Mooncake Store 为主后端，利用其跨平台传输能力；
+- 通过差异化能力（智能路由、云原生治理、异构集群编排）保持竞争力，避免陷入底层存储引擎的同质化竞争。
+
 #### 5.2.4 差异化价值总结
 
 openFuyao 的独特价值在于"异构硬件编排 + 云原生治理"的组合能力：
@@ -693,6 +707,7 @@ openFuyao 的独特价值在于"异构硬件编排 + 云原生治理"的组合�
 - HiSparse（活跃子集驻留思路）：[https://lmsys.org/blog/2026-04-10-sglang-hisparse/](https://lmsys.org/blog/2026-04-10-sglang-hisparse/)
 - Mooncake Store 布局处理器框架：`mooncake-store/include/kvcache_layout_handler.h`
 - MemCache RFC（Ascend 原生互连设计参考）：[https://github.com/vllm-project/vllm-ascend/issues/6410](https://github.com/vllm-project/vllm-ascend/issues/6410)
+- Yuanrong UB 总线优化（竞争对标参考）：Yuanrong 已实现 UB 总线原生优化，实测 48GB/s H2H（Host-to-Host）带宽，openFuyao 需通过灵衢总线适配填补同等能力。Yuanrong 在 Ascend 底层存储优化上的技术成果可作为性能对标基准，激励 openFuyao 在 NPU 原生互连优化上达到同等水平。
 
 **预期成果：**
 
@@ -720,6 +735,8 @@ openFuyao 的独特价值在于"异构硬件编排 + 云原生治理"的组合�
 
 - Mooncake TE 异构传输架构（HCCL / ADXL / heterogeneous_rdma_transport）
 - vLLM-Ascend PD 分离验证：[https://docs.vllm.ai/projects/ascend/en/v0.11.0/tutorials/multi_node_pd_disaggregation_mooncake.html](https://docs.vllm.ai/projects/ascend/en/v0.11.0/tutorials/multi_node_pd_disaggregation_mooncake.html)
+
+**竞争差异化价值：** Yuanrong 仅支持 Ascend NPU 平台，缺乏跨硬件互通能力（无法支持 Ascend + NVIDIA 混合集群场景）。openFuyao 的跨厂商互通定位具有独特价值——在"Ascend Prefill + NVIDIA Decode"这种中国企业普遍面临的异构部署场景下，openFuyao 是唯一能够提供完整 KVCache 编排方案的系统。这一能力无法被 Yuanrong 替代，构成了 openFuyao 在异构场景下的差异化护城河。
 
 **预期成果：**
 
