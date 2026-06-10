@@ -1110,7 +1110,7 @@ gantt
 
 **切入点 1：KVCache Layout Handler（最高优先级）**
 - 对应趋势 2（注意力机制多样化）
-- 技术前沿：Qwen3.5/DeepSeek 等 new models 采用 Hybrid Attention (GQA+MLA+GDN)
+- 技术前沿：Qwen3.5/DeepSeek 等 new models 采用 Hybrid Attention（混合 GQA+MLA+滑动窗口等多种注意力模式）
 - 竞争少：目前仅 @ykwd 深度理解这块，缺乏第二位专家
 - 已有基础：GQA/MLA/Hybrid Layout Handler 代码框架已完成
 - 行动：发起 RFC -> 提交 PR -> 成为该方向的社区专家
@@ -1228,6 +1228,10 @@ Yuanrong 作为 Ascend NPU 场景的直接竞争对手，对 Mooncake 上游席�
 | TTFT | Time To First Token | 首个 token 生成延迟，衡量 Prefill 阶段效率的关键指标 |
 | E2EL | End-to-End Latency | 端到端延迟，从请求发起到完整响应的总延迟 |
 | LRU | Least Recently Used | 最近最少使用淘汰策略，优先淘汰最久未被访问的数据 |
+| KVPool | KV Cache Pool | vLLM-Ascend 的 KV 缓存池管理，支持 Mooncake / MemCache / Yuanrong 多后端 |
+| UB | Unified Bus（UniBand） | 华为统一总线互连协议，鲲鹏处理器与 Ascend NPU 之间的高速互连，实测 48GB/s H2H 带宽 |
+| D2D | Device-to-Device | NPU 间直接数据传输，绕过主机侧中转，降低传输延迟 |
+| GVA | Global Virtual Address | 灵衢（LingQu）全局虚拟地址，支持跨节点 NPU 内存的统一寻址和直接访问 |
 
 ---
 
@@ -1240,37 +1244,41 @@ Yuanrong 作为 Ascend NPU 场景的直接竞争对手，对 Mooncake 上游席�
 1. Mooncake 论文：[arXiv 2407.00079](https://arxiv.org/abs/2407.00079)（FAST 2025 Best Paper）
 2. DeepSeek-V2 Technical Report（MLA 论文）：[arXiv 2405.04434](https://arxiv.org/abs/2405.04434)
 3. LMCache CacheBlend 论文（EuroSys 2025 Best Paper）：[https://dl.acm.org/doi/10.1145/3700250.3704832](https://dl.acm.org/doi/10.1145/3700250.3704832)
+4. YuanRong 论文（ACM SIGCOMM 2024）：[https://dl.acm.org/doi/10.1145/3651890.3672216](https://dl.acm.org/doi/10.1145/3651890.3672216)
 
 ### 官方博客与技术文档
 
-4. vLLM Blog — Mooncake Store 集成（2026-05-06）：[https://vllm.ai/blog/2026-05-06-mooncake-store](https://vllm.ai/blog/2026-05-06-mooncake-store)
-5. SGLang Blog — HiCache（2025-09-10）：[https://lmsys.org/blog/2025-09-10-sglang-hicache/](https://lmsys.org/blog/2025-09-10-sglang-hicache/)
-6. SGLang Blog — HiSparse（2026-04-10）：[https://lmsys.org/blog/2026-04-10-sglang-hisparse/](https://lmsys.org/blog/2026-04-10-sglang-hisparse/)
-7. LMCache 官方博客：[https://blog.lmcache.ai](https://blog.lmcache.ai)
-8. HiCache 设计文档：[https://docs.sglang.ai/advanced_features/hicache_design.html](https://docs.sglang.ai/advanced_features/hicache_design.html)
-9. LMCache 架构文档：[https://docs.lmcache.ai/developer_guide/architecture.html](https://docs.lmcache.ai/developer_guide/architecture.html)
+5. vLLM Blog — Mooncake Store 集成（2026-05-06）：[https://vllm.ai/blog/2026-05-06-mooncake-store](https://vllm.ai/blog/2026-05-06-mooncake-store)
+6. SGLang Blog — HiCache（2025-09-10）：[https://lmsys.org/blog/2025-09-10-sglang-hicache/](https://lmsys.org/blog/2025-09-10-sglang-hicache/)
+7. SGLang Blog — HiSparse（2026-04-10）：[https://lmsys.org/blog/2026-04-10-sglang-hisparse/](https://lmsys.org/blog/2026-04-10-sglang-hisparse/)
+8. LMCache 官方博客：[https://blog.lmcache.ai](https://blog.lmcache.ai)
+9. HiCache 设计文档：[https://docs.sglang.ai/advanced_features/hicache_design.html](https://docs.sglang.ai/advanced_features/hicache_design.html)
+10. LMCache 架构文档：[https://docs.lmcache.ai/developer_guide/architecture.html](https://docs.lmcache.ai/developer_guide/architecture.html)
+11. openYuanrong 数据系统：近计算高性能分布式内存缓存（openEuler Blog, 2026-02-26）：[https://www.openeuler.org/zh/blog/20260226-openYuanrong_04/20260226-openYuanrong_04.html](https://www.openeuler.org/zh/blog/20260226-openYuanrong_04/20260226-openYuanrong_04.html)
 
 ### GitHub 仓库与 Issue
 
-10. Mooncake GitHub README：[https://github.com/kvcache-ai/Mooncake/](https://github.com/kvcache-ai/Mooncake/)
-11. LMCache GitHub：[https://github.com/LMCache/LMCache](https://github.com/LMCache/LMCache)
-12. MemCache RFC（vLLM-Ascend Issue #6410）：[https://github.com/vllm-project/vllm-ascend/issues/6410](https://github.com/vllm-project/vllm-ascend/issues/6410)
-13. Mooncake 社区贡献流程：[https://github.com/kvcache-ai/Mooncake/blob/main/CONTRIBUTING.md](https://github.com/kvcache-ai/Mooncake/blob/main/CONTRIBUTING.md)
-14. Mooncake RFC 流程：[https://github.com/kvcache-ai/Mooncake/issues](https://github.com/kvcache-ai/Mooncake/issues)
+12. Mooncake GitHub README：[https://github.com/kvcache-ai/Mooncake/](https://github.com/kvcache-ai/Mooncake/)
+13. LMCache GitHub：[https://github.com/LMCache/LMCache](https://github.com/LMCache/LMCache)
+14. MemCache RFC（vLLM-Ascend Issue #6410）：[https://github.com/vllm-project/vllm-ascend/issues/6410](https://github.com/vllm-project/vllm-ascend/issues/6410)
+15. Mooncake 社区贡献流程：[https://github.com/kvcache-ai/Mooncake/blob/main/CONTRIBUTING.md](https://github.com/kvcache-ai/Mooncake/blob/main/CONTRIBUTING.md)
+16. Mooncake RFC 流程：[https://github.com/kvcache-ai/Mooncake/issues](https://github.com/kvcache-ai/Mooncake/issues)
+17. Yuanrong KVPool 后端 RFC（vLLM-Ascend Issue #7649）：[https://github.com/vllm-project/vllm-ascend/issues/7649](https://github.com/vllm-project/vllm-ascend/issues/7649)
+18. openYuanrong 数据系统源码（Gitee）：[https://gitee.com/openeuler/yuanrong-datasystem](https://gitee.com/openeuler/yuanrong-datasystem)
 
 ### 验证文档与部署指南
 
-15. vLLM-Ascend PD 分离验证：[https://docs.vllm.ai/projects/ascend/en/v0.11.0/tutorials/multi_node_pd_disaggregation_mooncake.html](https://docs.vllm.ai/projects/ascend/en/v0.11.0/tutorials/multi_node_pd_disaggregation_mooncake.html)
+19. vLLM-Ascend PD 分离验证：[https://docs.vllm.ai/projects/ascend/en/v0.11.0/tutorials/multi_node_pd_disaggregation_mooncake.html](https://docs.vllm.ai/projects/ascend/en/v0.11.0/tutorials/multi_node_pd_disaggregation_mooncake.html)
 
 ### 产品发布
 
-16. openFuyao v26.03 Release：[https://www.openfuyao.cn/zh/blogs/blogsList/openFuyao-26-03-released/](https://www.openfuyao.cn/zh/blogs/blogsList/openFuyao-26-03-released/)
+20. openFuyao v26.03 Release：[https://www.openfuyao.cn/zh/blogs/blogsList/openFuyao-26-03-released/](https://www.openfuyao.cn/zh/blogs/blogsList/openFuyao-26-03-released/)
 
 ### 技术参考
 
-17. Kubernetes Operator 模式：[https://kubernetes.io/docs/concepts/extend-kubernetes/operator/](https://kubernetes.io/docs/concepts/extend-kubernetes/operator/)
+21. Kubernetes Operator 模式：[https://kubernetes.io/docs/concepts/extend-kubernetes/operator/](https://kubernetes.io/docs/concepts/extend-kubernetes/operator/)
 
 ### 源码引用
 
-18. Mooncake Store 布局处理器代码：`mooncake-store/include/kvcache_layout_handler.h`、`gqa_layout_handler.h`、`mla_layout_handler.h`、`hybrid_layout_handler.h`、`mha_layout_handler.h`
-19. Mooncake TE 传输引擎源码：`mooncake-transfer-engine/src/transport/`
+22. Mooncake Store 布局处理器代码：`mooncake-store/include/kvcache_layout_handler.h`、`gqa_layout_handler.h`、`mla_layout_handler.h`、`hybrid_layout_handler.h`、`mha_layout_handler.h`
+23. Mooncake TE 传输引擎源码：`mooncake-transfer-engine/src/transport/`
