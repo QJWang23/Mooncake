@@ -2,7 +2,7 @@
 title: 分布式 KVCache 技术趋势洞察与 openFuyao 规划
 date: 2026-06-10
 type: 技术趋势洞察报告
-status: draft
+status: final
 audience: 技术团队 + 管理层
 scope: 上游 Mooncake 贡献 + openFuyao 自研体系
 ---
@@ -20,7 +20,7 @@ scope: 上游 Mooncake 贡献 + openFuyao 自研体系
 - [Section 1: 引言与核心洞察摘要](#section-1-引言与核心洞察摘要)
 - [Section 2: 技术演进趋势](#section-2-技术演进趋势)
 - [Section 3: 生态格局与竞合分析](#section-3-生态格局与竞合分析)
-- [Section 4: 架构深度对比](#section-4-架构深度对比) <!-- 待撰写 -->
+- [Section 4: 架构深度对比](#section-4-架构深度对比)
 - [Section 5: openFuyao 差异化定位与突破方向](#section-5-openfuyao-差异化定位与突破方向)
 - [Section 6: 双线规划路线图](#section-6-双线规划路线图)
 
@@ -52,7 +52,7 @@ LLM 推理中 KVCache 管理已成为核心性能瓶颈——它占用 GPU HBM �
 | HiCache 实现最高 6x 吞吐提升、80% TTFT 降低 | [SGLang Blog, 2025-09-10](https://lmsys.org/blog/2025-09-10-sglang-hicache/) |
 | 蚂蚁集团使用 DeepSeek-R1-671B + Mooncake Store 后端 TTFT 降低 84% | [SGLang HiCache Blog](https://lmsys.org/blog/2025-09-10-sglang-hicache/) |
 | HiSparse 在 GLM-5.1 长上下文场景实现 5x 吞吐提升 | [SGLang Blog, 2026-04-10](https://lmsys.org/blog/2026-04-10-sglang-hisparse/) |
-| LMCache CacheBlend 在 RAG 场景接近 100% KVCache 命中率，获 EuroSys 2025 Best Paper | [EuroSys 2025](https://dl.acm.org/doi/10.1145/3693.comfortable), [LMCache GitHub](https://github.com/LMCache/LMCache) |
+| LMCache CacheBlend 在 RAG 场景接近 100% KVCache 命中率，获 EuroSys 2025 Best Paper | [EuroSys 2025 CacheBlend 论文](https://dl.acm.org/doi/10.1145/3700250.3704832), [LMCache GitHub](https://github.com/LMCache/LMCache) |
 | LMCache + Mooncake 在 8xH800 Qwen2.5-72B 上 TTFT 降低 69.1%、吞吐提升 191% | [LMCache Blog](https://blog.lmcache.ai) |
 | openFuyao InferNex PD KVCache 感知路由实现 22.08% E2EL 改善 | [openFuyao v26.03 Release](https://www.openfuyao.cn/zh/blogs/blogsList/openFuyao-26-03-released/) |
 
@@ -156,7 +156,7 @@ KVCache 存储架构经历了一条清晰的从"传输"到"分层存储"的深�
 
 - HiSparse 博客：[https://lmsys.org/blog/2026-04-10-sglang-hisparse/](https://lmsys.org/blog/2026-04-10-sglang-hisparse/)
 - Mooncake Store 布局处理器代码：`mooncake-store/include/kvcache_layout_handler.h`、`gqa_layout_handler.h`、`mla_layout_handler.h`、`hybrid_layout_handler.h`、`mha_layout_handler.h`
-- DeepSeek MLA 论文（DeepSeek-V2 Technical Report）
+- DeepSeek MLA 论文：[DeepSeek-V2 Technical Report, arXiv 2405.04434](https://arxiv.org/abs/2405.04434)
 
 ---
 
@@ -256,7 +256,7 @@ KVCache 系统与推理引擎的关系正在从松耦合的独立组件走向深
 
 - HiCache 博客：[https://lmsys.org/blog/2025-09-10-sglang-hicache/](https://lmsys.org/blog/2025-09-10-sglang-hicache/)
 - LMCache 博客：[https://blog.lmcache.ai](https://blog.lmcache.ai)
-- LMCache EuroSys 2025 论文（CacheBlend）
+- LMCache EuroSys 2025 论文（CacheBlend）：[https://dl.acm.org/doi/10.1145/3700250.3704832](https://dl.acm.org/doi/10.1145/3700250.3704832)
 - vLLM PD 解耦验证：[https://docs.vllm.ai/projects/ascend/en/v0.11.0/tutorials/multi_node_pd_disaggregation_mooncake.html](https://docs.vllm.ai/projects/ascend/en/v0.11.0/tutorials/multi_node_pd_disaggregation_mooncake.html)
 - vLLM Mooncake Store 集成博客：[https://vllm.ai/blog/2026-05-06-mooncake-store](https://vllm.ai/blog/2026-05-06-mooncake-store)
 
@@ -1012,3 +1012,70 @@ gantt
 - **甘特图时间线**直观展示了两条线的并行推进节奏和里程碑交汇点。
 
 这条双线路线图的核心逻辑是：**通过上游贡献建立技术影响力（"借船出海"），通过自研体系构建差异化护城河（"造船远航"），两条线相互支撑、协同推进，最终在 2027 Q2 交付完整的云原生 KVCache 治理平台。**
+
+---
+
+## 附录 A：术语表
+
+| 术语 | 全称 | 说明 |
+|------|------|------|
+| PD Disaggregation | Prefill-Decode Disaggregation | 预填充-解码分离架构，将 LLM 推理的 Prefill 和 Decode 阶段分配到不同计算节点 |
+| TE | Transfer Engine | Mooncake 高性能数据传输引擎，支持 TCP/RDMA/CXL/NVMe-oF 等多种传输协议 |
+| MHA | Multi-Head Attention | 多头注意力，传统 Transformer 注意力机制，每 head 独立 K/V |
+| GQA | Grouped Query Attention | 分组查询注意力，KV 组内共享，减少 head 数（GLM-4、Qwen 系列） |
+| MLA | Multi-Head Latent Attention | 多头潜在注意力（DeepSeek V2/V3），压缩到低维潜在向量，4-8x 存储缩减 |
+| DSA | DeepSeek Sparse Attention | DeepSeek 稀疏注意力（也泛指 Dynamic Sparse Attention），仅保留活跃 KV 子集 |
+| KDN | Knowledge Delivery Network | 知识交付网络（LMCache 概念），类比 CDN 但分发的是 KVCache 形式的推理结果 |
+| HBM | High Bandwidth Memory | 高带宽内存，GPU/NPU 上的高速显存，延迟最低但容量有限 |
+| CXL | Compute Express Link | 计算互连协议，提供跨节点共享的内存语义访问 |
+| GDS | GPUDirect Storage | GPU 直接存储访问，允许 GPU 绕过 CPU 直接读写 NVMe 存储 |
+| CRD | Custom Resource Definition | Kubernetes 自定义资源定义，用于扩展 K8s API |
+| TTFT | Time To First Token | 首个 token 生成延迟，衡量 Prefill 阶段效率的关键指标 |
+| E2EL | End-to-End Latency | 端到端延迟，从请求发起到完整响应的总延迟 |
+| LRU | Least Recently Used | 最近最少使用淘汰策略，优先淘汰最久未被访问的数据 |
+
+---
+
+## 附录 B：参考来源
+
+以下按出现顺序列出本文引用的所有外部来源：
+
+### 学术论文
+
+1. Mooncake 论文：[arXiv 2407.00079](https://arxiv.org/abs/2407.00079)（FAST 2025 Best Paper）
+2. DeepSeek-V2 Technical Report（MLA 论文）：[arXiv 2405.04434](https://arxiv.org/abs/2405.04434)
+3. LMCache CacheBlend 论文（EuroSys 2025 Best Paper）：[https://dl.acm.org/doi/10.1145/3700250.3704832](https://dl.acm.org/doi/10.1145/3700250.3704832)
+
+### 官方博客与技术文档
+
+4. vLLM Blog — Mooncake Store 集成（2026-05-06）：[https://vllm.ai/blog/2026-05-06-mooncake-store](https://vllm.ai/blog/2026-05-06-mooncake-store)
+5. SGLang Blog — HiCache（2025-09-10）：[https://lmsys.org/blog/2025-09-10-sglang-hicache/](https://lmsys.org/blog/2025-09-10-sglang-hicache/)
+6. SGLang Blog — HiSparse（2026-04-10）：[https://lmsys.org/blog/2026-04-10-sglang-hisparse/](https://lmsys.org/blog/2026-04-10-sglang-hisparse/)
+7. LMCache 官方博客：[https://blog.lmcache.ai](https://blog.lmcache.ai)
+8. HiCache 设计文档：[https://docs.sglang.ai/advanced_features/hicache_design.html](https://docs.sglang.ai/advanced_features/hicache_design.html)
+9. LMCache 架构文档：[https://docs.lmcache.ai/developer_guide/architecture.html](https://docs.lmcache.ai/developer_guide/architecture.html)
+
+### GitHub 仓库与 Issue
+
+10. Mooncake GitHub README：[https://github.com/kvcache-ai/Mooncake/](https://github.com/kvcache-ai/Mooncake/)
+11. LMCache GitHub：[https://github.com/LMCache/LMCache](https://github.com/LMCache/LMCache)
+12. MemCache RFC（vLLM-Ascend Issue #6410）：[https://github.com/vllm-project/vllm-ascend/issues/6410](https://github.com/vllm-project/vllm-ascend/issues/6410)
+13. Mooncake 社区贡献流程：[https://github.com/kvcache-ai/Mooncake/blob/main/CONTRIBUTING.md](https://github.com/kvcache-ai/Mooncake/blob/main/CONTRIBUTING.md)
+14. Mooncake RFC 流程：[https://github.com/kvcache-ai/Mooncake/issues](https://github.com/kvcache-ai/Mooncake/issues)
+
+### 验证文档与部署指南
+
+15. vLLM-Ascend PD 分离验证：[https://docs.vllm.ai/projects/ascend/en/v0.11.0/tutorials/multi_node_pd_disaggregation_mooncake.html](https://docs.vllm.ai/projects/ascend/en/v0.11.0/tutorials/multi_node_pd_disaggregation_mooncake.html)
+
+### 产品发布
+
+16. openFuyao v26.03 Release：[https://www.openfuyao.cn/zh/blogs/blogsList/openFuyao-26-03-released/](https://www.openfuyao.cn/zh/blogs/blogsList/openFuyao-26-03-released/)
+
+### 技术参考
+
+17. Kubernetes Operator 模式：[https://kubernetes.io/docs/concepts/extend-kubernetes/operator/](https://kubernetes.io/docs/concepts/extend-kubernetes/operator/)
+
+### 源码引用
+
+18. Mooncake Store 布局处理器代码：`mooncake-store/include/kvcache_layout_handler.h`、`gqa_layout_handler.h`、`mla_layout_handler.h`、`hybrid_layout_handler.h`、`mha_layout_handler.h`
+19. Mooncake TE 传输引擎源码：`mooncake-transfer-engine/src/transport/`
