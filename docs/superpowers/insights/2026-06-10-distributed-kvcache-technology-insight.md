@@ -606,6 +606,28 @@ openFuyao / InferNex 已在中国移动、中国联通等运营商的 AI 推理�
 
 openFuyao 团队已向 Mooncake 上游贡献了 Ascend 热缓存优化（hot cache optimization）代码，这些贡献已合并到 Mooncake 主分支。这表明 openFuyao 不仅在下游集成 Mooncake Store，还在上游参与 Mooncake 的技术演进。这种双向关系（上游贡献 + 下游集成）在 Mooncake 生态中的贡献者中并不多见，为 openFuyao 建立 Mooncake 核心 Maintainer 的地位奠定了基础。
 
+**优势五：超节点 + UB 总线硬件差异化底座。**
+
+华为超节点架构为分布式 KVCache 提供了独特的硬件优势，这是 NVIDIA 生态无法复制的结构性差异：
+
+**智算超节点（CloudMatrix384）：**
+
+- 384 个 Ascend 910C NPU + 192 个 Kunpeng CPU，UB 全互联
+- 节点间带宽损失 <3%（NPU-NPU 读取：节点内 167 GB/s vs 节点间 164 GB/s）
+- 节点间延迟仅增加 <1μs（NPU-NPU 读取：节点内 1.2μs vs 节点间 1.9μs）
+- 256 TB GVA 统一地址空间，支持 NPU-to-NPU 零拷贝直接访问
+- CloudMatrix384 实测：KVCache 90% 重用率下 TTFT 降低 59%，预填充吞吐提升 2.28x（来源：arXiv CloudMatrix384 论文）
+- 即将推出的 Ascend 950 UB 带宽 2 TB/s，Ascend 970 达 4 TB/s
+
+**通算超节点（Kunpeng 950 + 昇腾/其他加速卡）：**
+
+- 业界首款通用计算超节点，亚百纳秒延迟、Tb 级带宽
+- CPU + NPU/GPU 混合部署，内存池化能力
+- 面向数据库、大数据等通用场景 + AI 推理的融合场景
+- 预计 2026 Q4 Kunpeng 950 上市
+
+**核心差异**：在 NVIDIA 生态中，NVLink 仅限节点内（最多 576 GPU），跨节点依赖 RDMA（延迟 5-50μs）。华为 UB 总线将超节点扁平化为单一逻辑节点，节点间延迟 <2μs——这在 KVCache 传输场景中实现了接近本地访问的性能。
+
 #### 5.1.2 关键差距
 
 **差距一：存储引擎层依赖——NPU 原生优化深度不足。**
@@ -643,12 +665,13 @@ Yuanrong Data System（华为 openEuler 社区项目）是 Ascend NPU 场景的�
 这一定位可以用以下公式表达：
 
 ```
-openFuyao / InferNex = 异构硬件编排层 + 云原生治理层 + KVCache 存储优化贡献者
+openFuyao / InferNex = 超节点硬件使能层 + 异构编排调度层 + 云原生治理层 + KVCache 存储优化贡献者
 ```
 
-三个组件的含义：
+四个组件的含义：
 
-- **异构硬件编排层**：在 Ascend NPU、NVIDIA GPU 等多元硬件之上提供统一的推理调度和 KVCache 管理能力，解决异构集群中的资源分配、请求路由、KVCache 迁移等编排问题。
+- **超节点硬件使能层**：基于华为超节点架构（智算超节点 CloudMatrix384 + 通算超节点 Kunpeng 950），利用 UB 总线全互联、GVA 统一编址等硬件特性，实现 KVCache 的零拷贝直访和分层存储优化。这是 NVIDIA 生态无法复制的最底层差异化来源——NVLink 无法跨节点，RDMA 需要 4 跳（HBM→Host→RDMA→Host→HBM），而 UB 仅需 1 跳（HBM→UB→HBM）。
+- **异构编排调度层**：在 Ascend NPU、NVIDIA GPU 等多元硬件之上提供统一的推理调度和 KVCache 管理能力，解决异构集群中的资源分配、请求路由、KVCache 迁移等编排问题。
 - **云原生治理层**：将 KVCache 管理与 Kubernetes 生态深度集成，通过 Operator 模式实现 KVCache 生命周期的自动化治理（预热、淘汰、迁移、压缩），通过可观测性实现运维闭环。
 - **KVCache 存储优化贡献者**：通过向 Mooncake Store 上游贡献 NPU 专用优化（Ascend 原生互连、NPU 布局处理器），参与底层存储引擎的技术演进，但不独立构建竞争性存储引擎。
 
@@ -668,7 +691,17 @@ Section 3.1 的定位矩阵清晰显示：Mooncake 定位底层传输+存储，H
 
 Section 3.3 的判断 3 论证了异构硬件是中国市场的独特变量，需要"既具备 NPU 原生优化能力、又能与 GPU 生态互通"的方案。目前没有任何开源系统在这一维度上达到生产级水平。openFuyao 凭借 Ascend NPU 的原生适配经验和运营商级生产部署，拥有建立这一差异化能力的最佳起点。但"NPU 深度适配"并不意味着"仅支持 NPU"——openFuyao 同时需要具备跨硬件互通能力，成为 Ascend 和 NVIDIA 之间的桥梁。
 
-#### 5.2.3 与关联系统的分工关系
+#### 5.2.3 硬件驱动的差异化逻辑
+
+超节点架构为 openFuyao 提供了"硬件+软件协同优化"的根本性差异化，这一差异化在两个具体场景中体现：
+
+**智算超节点场景：UB 总线零拷贝 KVCache 直访（GVA）是 NVIDIA 生态无法复制的硬件级差异化。** NVIDIA 生态中，NVLink 仅限节点内互联（最多 576 GPU），跨节点 KVCache 传输依赖 RDMA，需要 4 跳数据搬运（HBM→Host→RDMA→Host→HBM），延迟 5-50μs。华为 UB 总线通过 GVA 统一编址，实现超节点内 NPU HBM 的零拷贝直接访问，仅需 1 跳（HBM→UB→HBM），延迟 <1μs。CloudMatrix384 实测数据已验证：KVCache 90% 重用率下 TTFT 降低 59%，预填充吞吐提升 2.28x。这意味着在超节点范围内，KVCache 传输不再是性能瓶颈——这是软件层优化（无论多么精巧）无法企及的硬件级优势。
+
+**通算超节点场景：Kunpeng 950 + NPU 融合节点上，CPU 内存池与 NPU HBM 池通过 UB 统一编址。** 这种架构使得"CPU 内存做 KVCache 冷存储 + NPU HBM 做热缓存"的零拷贝分层成为可能——无需 RDMA 中转，NPU 可直接通过 UB 读取 Kunpeng DRAM 中的 KVCache 数据。在 NVIDIA 生态中，CPU-NPU 数据传输依赖 PCIe DMA（~50 GB/s），而 UB 下 Kunpeng-NPU 传输可达 110-151 GB/s。这一场景特别适合 Agent 多轮对话（历史缓存常驻 CPU DRAM、活跃对话驻留 NPU HBM）和 RAG 文档库（文档 KVCache 常驻 CPU DRAM、查询相关 KVCache 动态加载到 NPU HBM）。
+
+**这两个场景是 openFuyao 区别于 Mooncake、HiCache、LMCache 的根本性差异**——后三者都是"软件层优化"，在通用硬件（NVIDIA GPU + RDMA 网络）上通过算法和架构改进提升性能，其技术成果可以被任何使用相同硬件的竞争者复制。而 openFuyao 可以做"硬件+软件协同优化"——利用超节点 UB 总线和 GVA 统一编址的硬件特性，实现软件层无法企及的性能上限。这种差异化的壁垒在于：它不仅需要软件工程能力，还需要对华为超节点硬件架构的深度理解和联合优化能力。
+
+#### 5.2.4 与关联系统的分工关系
 
 为了进一步明确定位的边界，需要定义 openFuyao 与关联系统的分工：
 
@@ -697,7 +730,7 @@ Yuanrong Data System 是华为 openEuler 社区孵化的分布式数据服务项
 - 在跨硬件（Ascend + NVIDIA）场景下，以 Mooncake Store 为主后端，利用其跨平台传输能力；
 - 通过差异化能力（智能路由、云原生治理、异构集群编排）保持竞争力，避免陷入底层存储引擎的同质化竞争。
 
-#### 5.2.4 差异化价值总结
+#### 5.2.5 差异化价值总结
 
 openFuyao 的独特价值在于"异构硬件编排 + 云原生治理"的组合能力：
 
@@ -719,9 +752,40 @@ openFuyao 的独特价值在于"异构硬件编排 + 云原生治理"的组合�
 
 #### 方向 1：NPU 原生 KVCache 优化（差异化护城河）—— P0
 
-**定位：** 成为 Ascend NPU 生态的 KVCache 标准实现，在 NPU 上实现与 GPU 上 Mooncake Store 对标的 KVCache 传输性能。
+**定位：** 成为 Ascend NPU 生态的 KVCache 标准实现，在 NPU 上实现与 GPU 上 Mooncake Store 对标的 KVCache 传输性能。根据超节点架构的不同类型，细化为两个子场景。
 
 **技术路径：**
+
+**场景 A：智算超节点 KVCache（Ascend 910C/950 + UB 全互联）**
+
+面向 CloudMatrix384 等智算超节点场景，利用 UB 总线全互联和 GVA 统一编址实现超节点内 NPU HBM 的零拷贝直接访问。
+
+1. **L0-L1 层优化**：利用 GVA 统一编址，实现超节点内 NPU HBM 的零拷贝直接访问。通过 HCCP/HCOM 双协议栈访问，构建 LingQuCacheTier（灵衢缓存层），将超节点内的 NPU HBM 作为一个统一的 KVCache 存储池。
+
+2. **性能目标**：超节点内 KVCache 传输延迟 <1μs，带宽 >100 GB/s。
+
+3. **性能基准**：CloudMatrix384 已验证 KVCache 90% 重用率下 TTFT 降低 59%。参考数据（来源：arXiv CloudMatrix384 论文）：
+
+   | KVCache 传输路径 | 延迟 | 带宽 | 跳数 |
+   |-----------------|------|------|------|
+   | 传统 RDMA（NPU→Host→RDMA→Host→NPU） | 9-14 μs | 40-50 GB/s | 4 跳 |
+   | UB GVA 零拷贝（NPU→UB→NPU） | <1 μs | >100 GB/s | 1 跳 |
+
+4. **实现路径**：基于 HCCP（Huawei Collective Communication Protocol）和 HCOM（Huawei Communication）双协议栈，在 Mooncake TE 框架内新增 UB GVA 传输路径，实现超节点内 NPU-to-NPU 零拷贝数据传输。
+
+**场景 B：通算超节点 KVCache（Kunpeng 950 + NPU 混合）**
+
+面向 Kunpeng 950 + NPU 混合部署的通算超节点场景，利用 UB 统一编址实现 CPU DRAM 池与 NPU HBM 池的零拷贝分层存储。
+
+1. **L1-L2 层优化**：CPU DRAM 池与 NPU HBM 池通过 UB 统一编址。将 Kunpeng DRAM 注册为 GVA 空间，NPU 直接零拷贝读取，实现"CPU 内存做 KVCache 冷存储（PB 级容量）+ NPU HBM 做热缓存（亚微秒访问）"的零拷贝分层。
+
+2. **性能目标**：Kunpeng-NPU 传输 110-151 GB/s（vs NVIDIA 生态 PCIe DMA ~50 GB/s）。
+
+3. **差异化**：在 NVIDIA 生态中，CPU-NPU 数据传输依赖 PCIe DMA（~50 GB/s），UB 下 Kunpeng-NPU 传输可达 110-151 GB/s。无需 RDMA 中转即可实现大容量 KVCache 分层存储。
+
+4. **应用场景**：Agent 多轮对话历史缓存（历史上下文常驻 CPU DRAM、活跃对话驻留 NPU HBM）、RAG 文档库常驻缓存（文档 KVCache 常驻 CPU DRAM、查询相关 KVCache 动态加载到 NPU HBM）。
+
+**通用技术路径（适用于两个场景）：**
 
 1. **Ascend 原生互连深度优化**：深入研究 Ascend NPU 的 `device_rdma`（设备侧 RDMA）、`device_sdma`（设备间直接内存访问）、`host_urma`（Kunpeng 处理器用户态 RDMA）等原生互连技术，在 Mooncake TE 的 ADXL Direct Transport 基础上实现更深层次的硬件直连优化。重点关注 NPU HBM 与 DRAM 之间的数据搬运效率，目标是消除 HCCL 封装层的性能开销。
 
@@ -740,7 +804,9 @@ openFuyao 的独特价值在于"异构硬件编排 + 云原生治理"的组合�
 
 **预期成果：**
 
-- Ascend NPU 上 KVCache 传输性能达到 Mooncake Store 在 NVIDIA GPU 上的 80%+ 水平（考虑硬件架构差异）
+- 场景 A：智算超节点内 KVCache 传输延迟 <1μs，带宽 >100 GB/s，TTFT 降低 50%+
+- 场景 B：通算超节点 Kunpeng-NPU 传输达到 110-151 GB/s，实现 CPU DRAM 冷存储 + NPU HBM 热缓存的零拷贝分层
+- Ascend NPU 上 KVCache 整体传输性能达到 Mooncake Store 在 NVIDIA GPU 上的 80%+ 水平（考虑硬件架构差异）
 - NPU 专用布局处理器作为独立 PR 合并到 Mooncake Store 上游
 - 建立 Ascend NPU KVCache 性能基线和持续优化框架
 
@@ -789,6 +855,12 @@ openFuyao 的独特价值在于"异构硬件编排 + 云原生治理"的组合�
 
 4. **多引擎兼容的缓存策略抽象**：设计统一的缓存策略抽象层，同时兼容 vLLM KV Connector 和 SGLang HiCache 的接口，使得同一套 KVCache 治理策略可以跨推理引擎生效。这一抽象层不替代 HiCache 或 LMCache 的功能，而是在其上提供统一的生命周期管理。
 
+5. **超节点拓扑感知路由策略**：Hermes-router 增加超节点拓扑感知路由策略，将 KVCache 感知调度与 UB 总线拓扑感知结合。核心策略：优先在超节点内匹配 KVCache 命中（超节点内延迟 <2μs vs 跨超节点延迟 5-50μs），当超节点内无命中时再跨超节点搜索。这一策略充分利用超节点扁平化为单一逻辑节点的硬件优势，最大化 KVCache 本地命中率。
+
+6. **超节点边界感知弹性扩缩容**：ElasticScaler 增加超节点边界感知，弹性扩缩容优先在超节点内完成，避免跨超节点的 KVCache 迁移开销。当超节点内资源不足需要跨超节点扩容时，采用渐进式迁移策略，优先迁移冷 KVCache，减少迁移对在线服务的影响。
+
+7. **UB 总线带宽和延迟监控**：Eagle-eye 增加 UB 总线带宽和延迟监控能力，将 RDMA 带宽指标扩展为 UB 带宽指标，亚健康检测增加 UB 链路质量评估。监控指标包括：UB 链路带宽利用率、UB 链路延迟分布、GVA 地址空间使用率、超节点内 NPU HBM 容量分布等，为超节点场景下的运维决策提供数据支撑。
+
 **可参考系统：**
 
 - Kubernetes Operator 模式：[https://kubernetes.io/docs/concepts/extend-kubernetes/operator/](https://kubernetes.io/docs/concepts/extend-kubernetes/operator/)
@@ -799,7 +871,8 @@ openFuyao 的独特价值在于"异构硬件编排 + 云原生治理"的组合�
 
 - KVCache 生命周期管理 Operator 发布，支持预热/淘汰/迁移/压缩四种策略
 - 基于流量预测的主动缓存调度实现 KVCache 命中率提升 20%+
-- 深度可观测性指标通过 Prometheus Exporter 暴露，形成运维闭环
+- 超节点拓扑感知路由实现超节点内 KVCache 命中率 >80%，跨超节点流量降低 50%+
+- 深度可观测性指标通过 Prometheus Exporter 暴露，形成运维闭环，包含 UB 总线监控指标
 
 ---
 
@@ -847,11 +920,33 @@ openFuyao 的独特价值在于"异构硬件编排 + 云原生治理"的组合�
 
 方向 1 和方向 2 是 P0 优先级，建议并行推进——方向 1 聚焦 Ascend NPU 的原生优化，方向 2 聚焦异构互通能力，两者在格式分析阶段有协同（都需要深入理解 Ascend NPU 的 KVCache 内存布局）。方向 3（P1）在方向 1/2 建立基础能力后推进，利用 NPU 优化和异构互通的成果构建治理平台。方向 4（P1）是持续进行的工作，将方向 1/2/3 的技术产出转化为上游贡献。
 
+#### 硬件相关里程碑节点
+
+在上述四个方向的推进过程中，超节点硬件相关的里程碑节点是验证硬件驱动差异化的关键检查点：
+
+**M1.5（2026 Q3）：灵衢 GVA 直访 KVCache PoC 验证。**
+
+- **描述**：在 CloudMatrix384 智算超节点上，验证通过 GVA 统一编址实现 NPU-to-NPU 零拷贝 KVCache 直访的技术可行性。
+- **验收标准**：
+  1. 超节点内 KVCache 传输延迟 <1μs
+  2. 超节点内 KVCache 传输带宽 >100 GB/s
+  3. LingQuCacheTier（灵衢缓存层）基本功能可用
+- **前置依赖**：方向 1 场景 A 的 UB GVA 传输路径实现
+
+**M2.5（2026 Q4）：通算超节点 Kunpeng 950 + NPU 混合 KVCache 验证。**
+
+- **描述**：在 Kunpeng 950 + NPU 混合部署的通算超节点上，验证"CPU DRAM 冷存储 + NPU HBM 热缓存"零拷贝分层方案。
+- **验收标准**：
+  1. Kunpeng DRAM 到 NPU HBM 零拷贝传输延迟 <2μs
+  2. Kunpeng-NPU 传输带宽达到 110-151 GB/s
+  3. Agent 多轮对话场景下 KVCache 冷热分层命中率 >90%
+- **前置依赖**：M1.5，方向 1 场景 B 的 UB 内存池化适配实现
+
 ### 5.5 本章小结
 
-openFuyao 的差异化定位是"异构推理的云原生编排层"，这一定位基于三个客观现实：底层存储引擎趋于收敛（Mooncake Store 成为主流）、openFuyao 在编排层拥有独特优势（Hermes-router / 弹性扩展器 / Eagle-eye）、异构硬件是中国市场的独特变量（需要 NPU 深度优化 + GPU 互通能力）。
+openFuyao 的差异化定位是"超节点硬件使能层 + 异构编排调度层 + 云原生治理层"，这一定位基于四个客观现实：底层存储引擎趋于收敛（Mooncake Store 成为主流）、华为超节点架构提供了 NVIDIA 生态无法复制的硬件级差异化（UB 总线零拷贝直访、GVA 统一编址）、openFuyao 在编排层拥有独特优势（Hermes-router / 弹性扩展器 / Eagle-eye）、异构硬件是中国市场的独特变量（需要 NPU 深度优化 + GPU 互通能力）。
 
-四个突破方向围绕这一定位展开：P0 方向（NPU 原生优化 + 异构互通）构建技术护城河，P1 方向（云原生治理 + 上游贡献）扩展生态影响力。这四个方向不是孤立的——NPU 优化为异构互通奠定基础，异构互通为云原生治理提供场景，所有技术产出通过上游贡献转化为社区影响力。Section 6 将基于这些方向制定具体的双线规划路线图。
+四个突破方向围绕这一定位展开：P0 方向（NPU 原生优化，含智算超节点和通算超节点两个子场景 + 异构互通）构建技术护城河，P1 方向（云原生治理，含超节点感知调度 + 上游贡献）扩展生态影响力。这四个方向不是孤立的——超节点硬件优化为异构互通奠定基础，异构互通为云原生治理提供场景，所有技术产出通过上游贡献转化为社区影响力。硬件里程碑（M1.5 灵衢 GVA PoC、M2.5 通算超节点验证）是验证硬件驱动差异化的关键检查点。Section 6 将基于这些方向制定具体的双线规划路线图。
 
 ---
 
