@@ -801,61 +801,62 @@ graph TB
 
 ```mermaid
 graph TB
-    subgraph 应用层["应用层（多语义统一）"]
-        VLLM_A[vLLM-Ascend<br/>KV Pool 后端]
-        VERL[veRL<br/>RL 训练]
-        APP[Serverless 应用]
-    end
+    VLLM_A[vLLM-Ascend<br/>KV Pool 后端]
+    VERL[veRL RL 训练]
+    APP[Serverless 应用]
 
-    subgraph SDK层["SDK 层 - 三种数据语义"]
-        KV_API[KV 接口<br/>零拷贝共享内存]
-        OBJ_API[Object 接口<br/>引用计数 + Future]
-        HET_OBJ[Heterogeneous Object<br/>NPU HBM 抽象 + D2D 直传]
-    end
+    KV_API[KV 接口<br/>零拷贝共享内存]
+    OBJ_API[Object 接口<br/>引用计数 + Future]
+    HET_OBJ[Heterogeneous Object<br/>NPU HBM 抽象 + D2D 直传]
 
-    subgraph Worker层["Worker 层（核心组件）"]
-        WK[Worker 进程<br/>DRAM/SSD 资源分配]
+    WK[Worker 进程<br/>DRAM/SSD 资源分配]
 
-        subgraph 分布式元数据["去中心化元数据 ★ 设计哲学核心"]
-            HOMEDIR[Home Directory<br/>位置编码直接寻址<br/>O(1) 无中心查找]
-            LOCAL_META[节点本地元数据目录<br/>各节点独立运行]
-            HOMEDIR <--> LOCAL_META
-        end
+    HOMEDIR["Home Directory<br/>位置编码直接寻址 O(1)<br/>-- 去中心化元数据核心 --"]
+    LOCAL_META[节点本地元数据目录<br/>各节点独立运行]
 
-        subgraph 多级缓存["透明多级缓存（应用无感）"]
-            HBM_T[HBM 层<br/>NPU 高速内存]
-            DRAM_T[DRAM 层<br/>主机内存]
-            SSD_T[SSD 溢出层<br/>容量扩展]
-            HBM_T -.自动溢出.-> DRAM_T
-            DRAM_T -.自动溢出.-> SSD_T
-        end
+    HBM_T[HBM 层 NPU 高速内存]
+    DRAM_T[DRAM 层 主机内存]
+    SSD_T[SSD 溢出层 容量扩展]
 
-        WK --> 分布式元数据
-        WK --> 多级缓存
-    end
+    D2D["D2D: NPU-NPU P2P"]
+    H2D["H2D/D2H: 20 GB/s/卡"]
+    H2H["H2H UB: 48 GB/s"]
+    CROSS["跨节点 H2D 直访<br/>绕过 HBM 中继"]
 
-    subgraph UB原生传输["UB 总线原生传输（Ascend 深度集成）"]
-        D2D[D2D<br/>NPU↔NPU P2P<br/>HCCS 直传]
-        H2D[H2D/D2H<br/>huge-page 聚合<br/>20 GB/s/卡]
-        H2H[H2H UB SHM<br/>48 GB/s 实测]
-        CROSS[跨节点 H2D 直访<br/>NPU NIC 直读远程主机内存<br/>绕过 HBM 中继]
-    end
+    ETCD_Y[ETCD 节点发现<br/>故障恢复 + 在线扩缩容]
 
-    subgraph 集群管理["集群管理（ETCD）"]
-        ETCD_Y[ETCD<br/>节点发现 + 健康检查<br/>故障恢复 + 在线扩缩容]
-    end
+    VLLM_A --> KV_API
+    VLLM_A --> OBJ_API
+    VLLM_A --> HET_OBJ
+    VERL --> KV_API
+    VERL --> OBJ_API
+    APP --> KV_API
+    APP --> OBJ_API
+    APP --> HET_OBJ
 
-    VLLM_A --> SDK层
-    VERL --> SDK层
-    APP --> SDK层
-    SDK层 --> WK
-    多级缓存 --> UB原生传输
-    WK -.注册.-> ETCD_Y
+    KV_API --> WK
+    OBJ_API --> WK
+    HET_OBJ --> WK
+
+    WK --> HOMEDIR
+    WK --> LOCAL_META
+    HOMEDIR <--> LOCAL_META
+
+    WK --> HBM_T
+    HBM_T -. 自动溢出 .-> DRAM_T
+    DRAM_T -. 自动溢出 .-> SSD_T
+
+    HBM_T --> D2D
+    HBM_T --> H2D
+    DRAM_T --> H2H
+    DRAM_T --> CROSS
+
+    WK -. 注册 .-> ETCD_Y
 
     classDef philosophy fill:#fff3e0,stroke:#f57c00,stroke-width:3px
     classDef ascend fill:#e3f2fd,stroke:#2196f3,stroke-width:2px
-    class HOMEDIR,多级缓存 philosophy
-    class UB原生传输,HET_OBJ ascend
+    class HOMEDIR,LOCAL_META philosophy
+    class D2D,H2D,H2H,CROSS,HET_OBJ ascend
 ```
 
 **与技术趋势的映射：**
