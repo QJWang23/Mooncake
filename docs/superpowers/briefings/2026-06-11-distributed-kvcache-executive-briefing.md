@@ -370,68 +370,25 @@ graph TB
 
 ---
 
-### 5.2 方向 1：NPU 原生 KVCache 优化（差异化护城河）—— P0
+### 5.2 三大突破方向一览表
 
-**核心价值**：
-
-> 成为 Ascend NPU 生态的 KVCache 标准实现，在 NPU 上实现与 GPU 上 Mooncake Store 对标的传输性能。这是 openFuyao 区别于 Mooncake/HiCache/LMCache 的 **硬件级差异化护城河**。
-
-**两个子场景的突破路径**：
-
-| 场景 | 硬件架构 | 技术路径 | 性能目标 |
-|------|---------|---------|---------|
-| **A. 智算超节点** | Ascend 910C/950 + UB 全互联 | L0-L1 GVA 零拷贝，构建 LingQuCacheTier | 超节点内延迟 <1μs，带宽 >100 GB/s |
-| **B. 通算超节点** | Kunpeng 950 + Ascend NPU | CPU DRAM 冷存储 + NPU HBM 热缓存 | Kunpeng-NPU 110-151 GB/s |
-
-**关键对比：UB vs RDMA**
-
-| 传输路径 | 跳数 | 延迟 | 带宽 |
-|---------|------|------|------|
-| RDMA（NPU→Host→RDMA→Host→NPU） | 4 跳 | 9-14 μs | 40-50 GB/s |
-| **UB GVA 零拷贝**（NPU→UB→NPU） | **1 跳** | **<1 μs** | **>100 GB/s** |
-
-**Mooncake 上游贡献点**：
-- NPU 专用布局处理器 → Mooncake Store `KVCacheLayoutHandler` 框架
-- Ascend ADXL Direct Transport 性能优化 → Mooncake TE
-- 建立 Ascend NPU KVCache 性能基线 → 持续对标 GPU 版本
+| 维度 | 方向 1：NPU 原生 KVCache 优化 | 方向 2：异构集群 KVCache 互通 | 方向 3：云原生 KVCache 治理 |
+|------|------------------------------|------------------------------|---------------------------|
+| **优先级** | **P0** | **P0** | P1 |
+| **一句话定位** | 成为 Ascend NPU 生态的 KVCache 标准实现 | 成为异构推理（Ascend+NVIDIA）的唯一完整编排方案 | 从"组件提供者"升级为"治理平台" |
+| **核心价值** | **硬件级差异化护城河**——NVIDIA NVLink 节点内限 576 GPU，UB 总线节点间延迟 <2μs，超节点扁平化为单一逻辑节点 | **生态桥梁**——Yuanrong 仅 Ascend 无法互通，openFuyao 跨厂商方案不可替代 | **管理层突破**——K8s 原生 KVCache 全生命周期自动化管理 |
+| **核心场景** | A. 智算超节点（910C/950 + UB）<br/>B. 通算超节点（Kunpeng + NPU） | Ascend Prefill + NVIDIA Decode PD 分离 | 超大规模集群智能缓存调度与运维 |
+| **技术突破路径** | A：L0-L1 GVA 零拷贝直访，构建 LingQuCacheTier<br/>B：CPU DRAM 冷存储 + NPU HBM 热缓存分层<br/>通用：Ascend 原生互连深度优化 + 稀疏 KV 子集传输 | ① 格式分析（数据类型/对齐/GQA 组划分差异）<br/>② 双向格式转换层设计（零拷贝）<br/>③ Mooncake TE 异构传输适配<br/>④ Hermes-router 硬件类型感知路由 | ① K8s Operator（预热/淘汰/迁移/压缩 CRD）<br/>② Hermes-router 流量预测主动调度<br/>③ 超节点拓扑感知路由<br/>④ Eagle-eye UB 带宽/延迟监控 |
+| **关键对比基准** | RDMA 4 跳 9-14μs/40-50GB/s<br/>**UB 1 跳 <1μs/>100GB/s** | 同构集群性能的 90%+（损失 <10%） | 超节点内延迟 <2μs vs 跨超节点 5-50μs |
+| **性能目标** | 智算：超节点内 <1μs、>100GB/s<br/>通算：Kunpeng-NPU 110-151GB/s<br/>Ascend 整体对标 GPU 80%+ | 异构 PD 分离性能损失 <10% | 命中率提升 20%+<br/>超节点内命中率 >80% |
+| **Mooncake 上游贡献点** | NPU 专用 Layout Handler（Store）<br/>ADXL Direct 性能优化（TE）<br/>Ascend KVCache 性能基线 | 异构格式转换模块（TE）<br/>通用化后贡献 | — |
+| **依赖关系** | 无（先行） | 依赖方向 1 格式分析结果 | 依赖方向 1/2 基础能力 |
+| **时间窗口** | Q3 2026 启动，Q1 2027 验证 | Q4 2026 启动，Q1 2027 PoC | Q4 2026 启动，Q2 2027 发布 |
+| **风险** | Yuanrong 已实现 UB 优化（48GB/s H2H），需达到同等水平 | 格式转换零拷贝实现复杂度高 | K8s Operator 生态成熟度 |
 
 ---
 
-### 5.3 方向 2：异构集群 KVCache 互通（生态桥梁）—— P0
-
-**核心价值**：
-
-> 成为"Ascend Prefill + NVIDIA Decode"异构部署场景的 **唯一完整 KVCache 编排方案**。Yuanrong 仅支持 Ascend，无法实现跨硬件互通——这是 openFuyao 的 **差异化护城河**。
-
-**技术突破路径**：
-
-1. **格式分析**：深入分析 Ascend vs NVIDIA KVCache 内存布局差异（数据类型、内存对齐、GQA 组划分方式）
-2. **转换层设计**：设计高效双向格式转换层，支持零拷贝策略
-3. **异构传输优化**：在 Mooncake TE（HCCL + RDMA）基础上补充格式适配层
-4. **路由策略扩展**：Hermes-router 增加"硬件类型感知"维度，选择转换开销最小路径
-
-**预期成果**：异构集群 PD 分离性能损失控制在同构集群的 **10% 以内**
-
----
-
-### 5.4 方向 3：云原生 KVCache 治理（管理层突破）—— P1
-
-**核心价值**：
-
-> 从"组件提供者"升级为"治理平台"，通过 K8s Operator 实现 KVCache 全生命周期自动化管理——这是上层编排定位的具体落地。
-
-**技术突破路径**：
-
-| 功能 | 技术实现 | 预期成果 |
-|------|---------|---------|
-| **生命周期管理** | K8s Operator + CRD（预热/淘汰/迁移/压缩） | 运维策略声明化 |
-| **主动缓存调度** | Hermes-router + 流量预测模型 | 命中率提升 20%+ |
-| **超节点拓扑感知** | 优先超节点内匹配（延迟 <2μs vs 跨超节点 5-50μs） | 超节点内命中率 >80% |
-| **UB 监控扩展** | Eagle-eye UB 带宽/延迟/GVA 空间监控 | 形成运维闭环 |
-
----
-
-### 5.5 方向 4：Mooncake 上游深耕路径（生态共建）—— P1
+### 5.3 方向 4：Mooncake 上游深耕路径（生态共建）—— P1
 
 **核心定位**：成为 Mooncake 核心 Maintainer 之一，通过持续高质量贡献建立技术影响力，使 openFuyao 成为 Mooncake 生态中 **异构 NPU 方向的权威贡献者**。
 
