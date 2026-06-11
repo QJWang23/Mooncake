@@ -236,7 +236,7 @@ graph TB
     HC["HiCache<br/>SGLang 绑定"]
     LMC["LMCache<br/>vLLM 绑定"]
     YR["Yuanrong<br/>Ascend UB 原生"]
-    OF["openFuyao<br/>云原生编排"]
+    OF["openFuyao<br/>KVCacheX"]
 
     MK <-.->|战略合作<br/>LMCache 桥接| LMC
     MK <-.->|后端合作<br/>Mooncake 是 HiCache 后端| HC
@@ -244,7 +244,7 @@ graph TB
     HC <-->|竞争<br/>分别绑定 SGLang/vLLM| LMC
     MK <-->|竞争<br/>跨硬件 vs Ascend 专用| YR
 
-    OF ==>|上游贡献 + 下游集成| MK
+    OF ==>|上游贡献| MK
 
     classDef coop fill:#c8e6c9,stroke:#2e7d32
     classDef comp fill:#ffcdd2,stroke:#c62828
