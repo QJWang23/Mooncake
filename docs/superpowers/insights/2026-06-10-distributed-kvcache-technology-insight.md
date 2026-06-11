@@ -20,7 +20,7 @@ scope: 上游 Mooncake 贡献 + openFuyao 自研体系
 - [Section 1: 引言与核心洞察摘要](#section-1-引言与核心洞察摘要)
 - [Section 2: 技术演进趋势](#section-2-技术演进趋势)
 - [Section 3: 生态格局与竞合分析](#section-3-生态格局与竞合分析)
-- [Section 4: 架构深度对比](#section-4-架构深度对比)
+- [Section 4: 架构深度对比（含设计哲学架构图）](#section-4-架构深度对比)
 - [Section 5: openFuyao 差异化定位与突破方向](#section-5-openfuyao-差异化定位与突破方向)
 - [Section 6: 双线规划路线图](#section-6-双线规划路线图)
 - [Section 7: 上游席位获取策略](#section-7-上游席位获取策略)
@@ -569,6 +569,338 @@ KVCache 系统的价值最终体现在与推理引擎的集成效果上。集成
 **第二，可扩展性比单点性能更具长期价值。** Mooncake Store 的 Handler 模式（可插拔布局适配）和 HiCache 的 3 函数接口（可插拔存储后端）都体现了"以扩展性换取生态"的设计哲学。在注意力机制和硬件平台都在快速变化的背景下，系统的适应能力比当前的性能数字更重要。
 
 **第三，异构硬件是架构分化的最大变量。** MemCache 的 Ascend 原生互连、Mooncake TE 的多平台适配、openFuyao 的异构编排——这三者分别代表了异构场景下"深度优化单平台"、"广度覆盖多平台"、"智能调度跨平台"三种不同的架构应对策略。在中国市场的现实约束下，这三种策略并非竞争关系，而是互补关系——深度优化提供单平台极致性能，广度覆盖确保跨平台可用性，智能调度实现全局最优。
+
+---
+
+### 4.6 核心组件设计哲学架构示意图
+
+为更直观地展现各核心组件的设计哲学差异，本节为四大代表性系统（Mooncake、HiCache+SGLang、LMCache、Yuanrong Data System）分别绘制架构示意图，重点体现各自的核心设计取舍以及与本文关键技术趋势的映射关系。
+
+#### 4.6.1 Mooncake：KVCache-first + 跨硬件统一抽象
+
+**设计哲学：** "KVCache 第一公民"——整个系统围绕 LLM 推理 KVCache 管理目的而生，通过 Transfer Engine 统一抽象多种硬件传输能力，通过 Layout Handler 框架适配多种注意力机制。Master 集中式元数据管理保证简洁性和生产可靠性。
+
+```mermaid
+graph TB
+    subgraph 推理引擎层["推理引擎层（多引擎中立）"]
+        VLLM[vLLM<br/>KV Connector]
+        SGLANG[SGLang<br/>HiCache 后端]
+        TRT[TRT-LLM /<br/>LMDeploy]
+    end
+
+    subgraph 客户端SDK["Mooncake Client SDK<br/>Put / Get / Query / Exist"]
+        CLIENT[Client API]
+    end
+
+    subgraph 元数据层["集中式元数据（Master Service）"]
+        MASTER[Master<br/>对象索引 + 副本管理 + 调度决策]
+        ETCD[etcd / Redis<br/>持久化与故障切换]
+        MASTER -.-> ETCD
+    end
+
+    subgraph 存储层["Mooncake Store 多级存储"]
+        L0[L0: HBM<br/>NPU/GPU 本地]
+        L1[L1: DRAM<br/>主机内存]
+        L2[L2: SSD/NVMe<br/>持久化层]
+        L0 --> L1
+        L1 --> L2
+    end
+
+    subgraph 布局处理器["Layout Handler 框架（可插拔）"]
+        MHA[MHA<br/>Handler]
+        GQA[GQA<br/>Handler]
+        MLA[MLA<br/>Handler]
+        HYBD[Hybrid<br/>Handler]
+        DSA[DSA<br/>规划中]
+    end
+
+    subgraph 传输引擎["Transfer Engine（跨硬件统一）"]
+        TCP[TCP]
+        RDMA[RDMA<br/>IB/RoCE/eRDMA]
+        NVLINK[NVLink]
+        HCCL[HCCL/ADXL<br/>Ascend]
+        HIP[HIP<br/>AMD]
+        MUSA[MUSA<br/>MooreThreads]
+        CXL[CXL<br/>NVMe-oF]
+    end
+
+    VLLM --> CLIENT
+    SGLANG --> CLIENT
+    TRT --> CLIENT
+    CLIENT --> MASTER
+    CLIENT --> 布局处理器
+    布局处理器 --> 存储层
+    存储层 --> 传输引擎
+
+    classDef philosophy fill:#fff3e0,stroke:#f57c00,stroke-width:3px
+    classDef extensible fill:#e8f5e9,stroke:#4caf50,stroke-width:2px
+    class MASTER philosophy
+    class 布局处理器,传输引擎 extensible
+```
+
+**与技术趋势的映射：**
+- **趋势 1（存储层级深化）**：HBM→DRAM→SSD 三层，应用控制淘汰
+- **趋势 2（注意力机制多样化）**：四种 Layout Handler 已实现，DSA 规划中
+- **趋势 3（异构硬件）**：传输引擎覆盖 6+ 协议，4+ 硬件平台
+- **趋势 4（生态集成）**：引擎中立，通过标准客户端 SDK 集成
+
+**核心取舍：** 选择"集中式元数据 + 跨硬件统一抽象"——以略微牺牲极致单平台性能为代价，换取生产可靠性、跨硬件覆盖面和多引擎集成能力。
+
+---
+
+#### 4.6.2 HiCache + SGLang：推理引擎内嵌 + 极简插件后端
+
+**设计哲学：** "推理引擎内层缓存"——将 KVCache 管理深度嵌入 SGLang 的 RadixAttention 基数树管理机制，通过 HiRadixTree 统一管理 GPU/CPU/远程三层缓存。对外存储后端通过极简的 3 函数接口（get/exist/set）实现可插拔，鼓励生态丰富。
+
+```mermaid
+graph TB
+    subgraph SGLang推理引擎["SGLang 推理引擎"]
+        RADIX[RadixAttention<br/>基数树<br/>前缀复用]
+        SCHED[请求调度器<br/>命中感知]
+        RADIX <--> SCHED
+    end
+
+    subgraph HiCache核心["HiCache 分层缓存（推理引擎内嵌）"]
+        HIRADIX[HiRadixTree<br/>分层页表<br/>统一索引 GPU/CPU/远程]
+
+        subgraph 数据平面["优化数据平面"]
+            GPUIO[GPU 辅助 I/O 内核<br/>3x cudaMemcpy 吞吐<br/>零拷贝主机布局]
+            PAGE[页优先布局<br/>IO 优化]
+        end
+
+        subgraph 控制平面["通用控制平面"]
+            OVERLAP[分层重叠<br/>N+1 层加载 ‖ N 层执行]
+            PREFETCH[预取策略<br/>尽力/超时/暂存]
+            WRITE[写策略<br/>write-through/back/selective]
+        end
+
+        HIRADIX --> GPUIO
+        HIRADIX --> 控制平面
+    end
+
+    subgraph 三层缓存["三层缓存层级"]
+        GPUC[GPU HBM<br/>层优先布局]
+        CPUC[CPU DRAM<br/>页优先布局]
+        REMOTE[远程存储]
+    end
+
+    subgraph 后端接口["插件式存储后端（仅 3 函数）"]
+        IF["get(key) / exist(key) / set(key, value)"]
+    end
+
+    subgraph 后端实现["可插拔后端实现"]
+        MK_B[Mooncake Store]
+        FS3[DeepSeek 3FS]
+        NIXL[NVIDIA NIXL]
+        FILE[本地文件]
+    end
+
+    SCHED --> HIRADIX
+    HIRADIX --> GPUC
+    GPUC <--> CPUC
+    CPUC <--> REMOTE
+    REMOTE --> IF
+    IF --> MK_B
+    IF --> FS3
+    IF --> NIXL
+    IF --> FILE
+
+    classDef philosophy fill:#fff3e0,stroke:#f57c00,stroke-width:3px
+    classDef innovation fill:#e3f2fd,stroke:#2196f3,stroke-width:2px
+    class HIRADIX philosophy
+    class GPUIO,IF innovation
+```
+
+**与技术趋势的映射：**
+- **趋势 1（存储层级深化）**：GPU 辅助 I/O 内核（独特创新）+ 三层模型
+- **趋势 2（注意力机制）**：依赖 SGLang 引擎层支持，KVCache 层适配有限
+- **趋势 3（异构硬件）**：主力 NVIDIA，通过后端插件间接支持其他硬件
+- **趋势 4（生态集成）**：深度绑定 SGLang RadixAttention，对外 3 函数极简接口
+
+**核心取舍：** 选择"深度引擎绑定 + 极简后端接口"——以放弃引擎中立为代价，换取与 SGLang 推理调度的深度协同（命中感知）和后端生态的低门槛接入。
+
+---
+
+#### 4.6.3 LMCache：知识交付网络（KDN）+ 中间桥接层
+
+**设计哲学：** "KVCache 即知识"——将 KVCache 从临时计算状态升级为可重用、可共享、可持久化的知识对象。LMCache 定位为 vLLM 与底层存储之间的"知识交付网络（KDN）"，通过 CacheBlend 跨请求智能混合实现接近 100% 的 RAG 命中率，并支持存储模式（持久化）和传输模式（PD 解耦）双模运行。
+
+```mermaid
+graph TB
+    subgraph vLLM["vLLM 推理引擎"]
+        PAGED[PagedAttention<br/>KV 内存管理器]
+        CONNECTOR[KV Connector<br/>标准接口]
+        PAGED <--> CONNECTOR
+    end
+
+    subgraph LMCache核心["LMCache 知识交付网络（KDN）"]
+        TOKENDB[Token Database<br/>缓存索引<br/>256-token 分块策略]
+
+        subgraph 智能层["智能管理层"]
+            BLEND[CacheBlend<br/>跨请求 KV 混合<br/>EuroSys 2025 Best Paper<br/>RAG ~100% 命中率]
+            ASYNC[异步卸载/加载<br/>非阻塞]
+            CTRL[控制器 API<br/>查找/清除/压缩/迁移]
+        end
+
+        subgraph 内存管理["内存对象与分配器"]
+            PIN[固定内存<br/>NUMA 感知]
+            LRU[LRU 淘汰]
+        end
+
+        TOKENDB --> BLEND
+        TOKENDB --> 内存管理
+        BLEND --> 智能层
+    end
+
+    subgraph 双模运行["双模运行架构"]
+        STORE_MODE[存储模式<br/>KVCache 持久化卸载<br/>跨会话保留热点]
+        TRANSFER_MODE[传输模式<br/>PD 解耦点对点通道<br/>实时路由 KVCache]
+    end
+
+    subgraph 四层缓存["四层缓存层级"]
+        GPU_L[GPU 内存<br/>主动工作集]
+        DRAM_L[CPU DRAM<br/>固定内存热缓存]
+        NVME_L[本地 NVMe<br/>NVMe GDS 直通]
+        REMOTE_L[远程持久化层]
+    end
+
+    subgraph 远程连接器["插件式远程连接器"]
+        MK_R[Mooncake Store<br/>战略合作 2025.05]
+        REDIS[Redis]
+        NIXL_R[NIXL]
+        INFI[InfiniStore]
+    end
+
+    CONNECTOR --> TOKENDB
+    智能层 --> 双模运行
+    双模运行 --> GPU_L
+    GPU_L <--> DRAM_L
+    DRAM_L <--> NVME_L
+    NVME_L <--> REMOTE_L
+    REMOTE_L --> 远程连接器
+
+    classDef philosophy fill:#fff3e0,stroke:#f57c00,stroke-width:3px
+    classDef award fill:#fce4ec,stroke:#e91e63,stroke-width:2px
+    class TOKENDB,双模运行 philosophy
+    class BLEND award
+```
+
+**与技术趋势的映射：**
+- **趋势 1（存储层级深化）**：四层最深（含本地 NVMe GDS），NUMA 感知
+- **趋势 2（注意力机制）**：通过 256-token 分块策略适配，机制级支持有限
+- **趋势 3（异构硬件）**：聚焦 NVIDIA + vLLM 生态
+- **趋势 4（生态集成）**：定位为 vLLM-Mooncake 桥接层，深度绑定 vLLM Connector
+
+**核心取舍：** 选择"管理层定位 + 智能化能力"——不与 Mooncake 在底层存储竞争，而是在中间管理层做 CacheBlend 等智能化创新，通过与 Mooncake 战略合作占据 vLLM 生态的"知识管理者"角色。
+
+---
+
+#### 4.6.4 Yuanrong Data System：内存中心 + 分布式元数据 + Serverless 原生
+
+**设计哲学：** "近计算分布式异构多级缓存"——以内存为中心、近计算部署，作为 Serverless 平台的数据子系统。通过 Object Directory 分布式元数据（Location Encoding 实现 O(1) 寻址）打破集中式元数据瓶颈，深度集成 Ascend UB 总线原生互连，提供 KV / Object / Heterogeneous Object 三种数据访问语义。
+
+```mermaid
+graph TB
+    subgraph 应用层["应用层（多语义统一）"]
+        VLLM_A[vLLM-Ascend<br/>KV Pool 后端]
+        VERL[veRL<br/>RL 训练]
+        APP[Serverless 应用]
+    end
+
+    subgraph SDK层["SDK 层 - 三种数据语义"]
+        KV_API[KV 接口<br/>零拷贝共享内存]
+        OBJ_API[Object 接口<br/>引用计数 + Future]
+        HET_OBJ[Heterogeneous Object<br/>NPU HBM 抽象 + D2D 直传]
+    end
+
+    subgraph Worker层["Worker 层（核心组件）"]
+        WK[Worker 进程<br/>DRAM/SSD 资源分配]
+
+        subgraph 分布式元数据["去中心化元数据 ★ 设计哲学核心"]
+            HOMEDIR[Home Directory<br/>位置编码直接寻址<br/>O(1) 无中心查找]
+            LOCAL_META[节点本地元数据目录<br/>各节点独立运行]
+            HOMEDIR <--> LOCAL_META
+        end
+
+        subgraph 多级缓存["透明多级缓存（应用无感）"]
+            HBM_T[HBM 层<br/>NPU 高速内存]
+            DRAM_T[DRAM 层<br/>主机内存]
+            SSD_T[SSD 溢出层<br/>容量扩展]
+            HBM_T -.自动溢出.-> DRAM_T
+            DRAM_T -.自动溢出.-> SSD_T
+        end
+
+        WK --> 分布式元数据
+        WK --> 多级缓存
+    end
+
+    subgraph UB原生传输["UB 总线原生传输（Ascend 深度集成）"]
+        D2D[D2D<br/>NPU↔NPU P2P<br/>HCCS 直传]
+        H2D[H2D/D2H<br/>huge-page 聚合<br/>20 GB/s/卡]
+        H2H[H2H UB SHM<br/>48 GB/s 实测]
+        CROSS[跨节点 H2D 直访<br/>NPU NIC 直读远程主机内存<br/>绕过 HBM 中继]
+    end
+
+    subgraph 集群管理["集群管理（ETCD）"]
+        ETCD_Y[ETCD<br/>节点发现 + 健康检查<br/>故障恢复 + 在线扩缩容]
+    end
+
+    VLLM_A --> SDK层
+    VERL --> SDK层
+    APP --> SDK层
+    SDK层 --> WK
+    多级缓存 --> UB原生传输
+    WK -.注册.-> ETCD_Y
+
+    classDef philosophy fill:#fff3e0,stroke:#f57c00,stroke-width:3px
+    classDef ascend fill:#e3f2fd,stroke:#2196f3,stroke-width:2px
+    class HOMEDIR,多级缓存 philosophy
+    class UB原生传输,HET_OBJ ascend
+```
+
+**与技术趋势的映射：**
+- **趋势 1（存储层级深化）**：HBM→DRAM→SSD 透明分层，应用无感（类 OS 页缓存模型）
+- **趋势 2（注意力机制）**：通用 KV 接口，注意力机制级适配未知
+- **趋势 3（异构硬件）**：仅 Ascend，但通过 UB 总线深度优化达到极致单平台性能
+- **趋势 4（生态集成）**：Serverless 原生设计，Future 语义、引用计数生命周期管理
+
+**核心取舍：** 选择"分布式元数据 + Ascend 深度绑定 + 多语义抽象"——以放弃跨硬件覆盖为代价，换取 10,000+ 卡规模下的元数据无瓶颈、UB 总线极致性能、以及超越 KVCache 的通用数据服务能力。
+
+---
+
+#### 4.6.5 四大组件设计哲学对比综述
+
+将四大组件的设计哲学抽象为以下对比表，凸显其在关键设计维度上的不同选择：
+
+| 设计维度 | Mooncake | HiCache + SGLang | LMCache | Yuanrong |
+|---------|----------|-------------------|---------|----------|
+| **核心哲学** | KVCache-first + 跨硬件统一 | 推理引擎内嵌 + 极简后端 | 知识交付网络（KDN） | 内存中心 + Serverless 原生 |
+| **元数据架构** | 集中式 Master | RadixAttention 基数树 | Token Database 集中 | **分布式 Object Directory（位置编码）** |
+| **硬件策略** | **广度优先（4+ 平台）** | NVIDIA 主力 | NVIDIA 聚焦 | **深度优先（Ascend UB 原生）** |
+| **引擎集成** | 引擎中立 | **深度绑定 SGLang** | **深度绑定 vLLM** | vLLM-Ascend / veRL |
+| **抽象层次** | 底层存储引擎 | 推理引擎内层 | 中间管理层 | 底层数据服务（多语义） |
+| **核心创新** | Layout Handler 框架 | **GPU 辅助 I/O 内核（3x）** | **CacheBlend（~100% 命中）** | 分布式元数据 + UB 直访 |
+| **扩展性策略** | Handler / TE 双重可插拔 | 3 函数后端接口 | 远程连接器插件 | SDK 多语义接口 |
+| **典型场景** | 通用 LLM 推理 | SGLang 生态长前缀场景 | vLLM 生态 RAG/Agent | Ascend Serverless 推理 |
+
+**设计哲学的"四象限"图谱：**
+
+```mermaid
+quadrantChart
+    title 设计哲学定位图谱
+    x-axis "硬件覆盖广度" --> "硬件深度优化"
+    y-axis "通用数据抽象" --> "KVCache 专用"
+    quadrant-1 "Mooncake：广覆盖 + KVCache 专用"
+    quadrant-2 "通用 + 广覆盖（暂无典型代表）"
+    quadrant-3 "Yuanrong：通用 + 深度优化"
+    quadrant-4 "HiCache/LMCache：深度引擎绑定 + KVCache 专用"
+    Mooncake: [0.25, 0.75]
+    HiCache: [0.55, 0.85]
+    LMCache: [0.50, 0.80]
+    Yuanrong: [0.85, 0.30]
+```
+
+**核心结论：** 四大组件分别占据不同的设计象限，没有"全面胜出"的方案。openFuyao 的差异化定位（详见 Section 5）应建立在对这一象限分布的清醒认知之上——既不与 Mooncake 在"广覆盖 + KVCache 专用"象限正面竞争，也不与 Yuanrong 在"通用 + Ascend 深度优化"象限重复，而是在"超节点硬件使能 + 云原生编排治理"这一新象限中开辟独特价值。
 
 ---
 
