@@ -19,10 +19,10 @@ scope: 技术趋势洞察 + openFuyao KVCache 生态影响力路径
 ### 一句话定位
 
 ```
-openFuyao/InferNex = 超节点硬件使能层 + 异构编排调度层 + 云原生治理层 + KVCache 存储优化贡献者
+openFuyao = 超节点硬件使能层 + 异构 KVCache 优化 + 上游贡献深耕
 ```
 
-**核心论点**：openFuyao 不应成为"另一个 Mooncake"，而应通过 **超节点 + 灵衢 UB 总线硬件底座** + **Mooncake 上游席位获取**，成为"异构推理的云原生编排层"。
+**核心论点**：openFuyao 不应成为"另一个 Mooncake"，而应通过 **超节点 + 灵衢 UB 总线硬件底座** + **Mooncake 上游席位获取**，成为 **Ascend NPU 生态的 KVCache 深度优化者与异构互通桥梁**。
 
 ### 三个关键数据支撑
 
@@ -30,7 +30,7 @@ openFuyao/InferNex = 超节点硬件使能层 + 异构编排调度层 + 云原�
 |------|------|---------------------|
 | Mooncake + vLLM：吞吐 **3.8x**，TTFT 降低 **46x** | [vLLM Blog, 2026-05-06] | 验证 KVCache 方案有效性，openFuyao 集成 Mooncake 已有收益 |
 | CloudMatrix384 UB：KVCache 90% 重用，TTFT 降低 **59%** | [arXiv 论文] | 华为超节点 + UB 硬件优势，openFuyao 核心差异化底座 |
-| InferNex KVCache 路由：E2EL 降低 **22%** | [openFuyao v26.03] | openFuyao 已有能力验证，可继续增强 |
+| 热点 KVCache 缓存：TTFT 降低 **55-93%** | [SIG 性能报告 v25.12] | openFuyao 已有 KVCache 热缓存优化贡献基础 |
 
 ### 三个核心判断
 
@@ -81,18 +81,18 @@ graph LR
 | 维度 | 具体情况 |
 |------|---------|
 | **业务场景** | 银行智能客服 Agent 处理多轮对话，历史上下文累积超过 64K tokens |
-| **核心痛点** | 上下文累积超 64K 时，TTFT >10s，严重影响用户体验 |
-| **KVCache 价值** | 缓存历史对话 KVCache，新请求仅计算增量部分 |
-| **量化收益** | 热点缓存优化：**TTFT 降低 55-93%**，跨节点延迟从 881ms 降至 287ms（来源：[SIG 性能报告 v25.12]） |
+| **核心痛点** | 每轮对话需重复处理全量历史 KVCache，上下文超 64K 时 TTFT >10s |
+| **KVCache 价值** | 热点 KVCache 缓存复用——历史对话 KVCache 常驻缓存，新请求仅计算增量部分 |
+| **量化收益** | 热点缓存优化：**TTFT 降低 55-93%**，跨节点传输延迟从 881ms 降至 287ms（来源：[SIG 性能报告 v25.12]） |
 
-#### 场景二：运营商 — 大规模异构集群推理
+#### 场景二：运营商/政务 — 超长文档与 PD 分离推理
 
 | 维度 | 具体情况 |
 |------|---------|
-| **业务场景** | 运营商 10,000+ 节点集群，昇腾 910B/910C 混合部署普遍 |
-| **核心痛点** | 异构算力利用率 <50%，调度器无法感知 KVCache 分布 |
-| **KVCache 价值** | KVCache 命中感知路由，将请求路由到缓存命中节点 |
-| **量化收益** | Hermes-router KVCache 感知路由：**TPS 提升 16-30%**，PD 感知路由 **E2EL 降低 22.08%**（来源：[openFuyao v26.03]） |
+| **业务场景** | 政务法规问答、运营商合同审核等 128K-1M 上下文场景，采用 PD 分离部署 |
+| **核心痛点** | 单卡 HBM 无法承载 128K+ KVCache（可达数十 GB）；预填充节点到解码节点跨节点传输延迟高 |
+| **KVCache 价值** | 多级存储卸载（HBM→DRAM→SSD）+ RDMA/UB 零拷贝传输，突破单卡容量限制和跨节点延迟瓶颈 |
+| **量化收益** | Mooncake Store + vLLM：**吞吐提升 3.8x，TTFT 降低 46x**（来源：[vLLM Blog, 2026-05-06]）；CloudMatrix384 UB：**KVCache 90% 重用率下 TTFT 降低 59%**（来源：[arXiv 论文]） |
 
 #### 场景三：互联网 — RAG 知识库与企业 Agent
 
@@ -100,17 +100,13 @@ graph LR
 |------|---------|
 | **业务场景** | 企业知识库 RAG 检索增强生成，大量用户查询共享相同文档前缀 |
 | **核心痛点** | 相同文档前缀被不同用户请求重复计算 KVCache，浪费大量算力 |
-| **KVCache 价值** | CacheBlend 跨请求智能混合，共享前缀 KVCache 直接复用 |
+| **KVCache 价值** | 跨请求 KVCache 智能复用——共享前缀 KVCache 直接命中，避免重复计算 |
 | **量化收益** | LMCache CacheBlend：**RAG 场景接近 100% 命中率**（EuroSys 2025 Best Paper）；蚂蚁集团 DeepSeek-R1：**TTFT 降低 84%**（来源：[SGLang HiCache Blog]） |
 
 ### 1.3 主流组件全景图
 
 ```mermaid
 graph TB
-    subgraph 上层["上层编排与治理"]
-        OF["openFuyao / InferNex<br/>云原生推理基础设施"]
-    end
-
     subgraph 中层["中间管理层"]
         HC["HiCache + SGLang<br/>分层 KV 缓存"]
         LMC["LMCache<br/>知识交付网络"]
@@ -128,21 +124,19 @@ graph TB
         UB_BUS["灵衢 UB 总线"]
     end
 
-    OF --> MK
     HC --> MK
     LMC --> MK
     MK --> NVIDIA
     MK --> ASCEND
     YR --> ASCEND
     YR --> UB_BUS
-    OF --> UB_BUS
-    OF --> KUNPENG
+    MK --> KUNPENG
 
     classDef bottom fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
-    classDef top fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
+    classDef mid fill:#fff3e0,stroke:#f57c00,stroke-width:2px
     classDef hw fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px
     class MK,YR bottom
-    class OF top
+    class HC,LMC mid
     class NVIDIA,ASCEND,KUNPENG,UB_BUS hw
 ```
 
@@ -306,10 +300,10 @@ graph LR
 
 | 维度 | Mooncake | openFuyao 应该做 | 论据 |
 |------|----------|-----------------|------|
-| 技术栈层级 | 底层存储引擎 | **上层编排 + 硬件使能** | Yuanrong/MemCache 已做底层，openFuyao 做编排避免竞争 |
-| 硬件策略 | 广度覆盖 4+ 平台 | **深度优化昇腾 + 灵衢 UB** | CloudMatrix384 实测优势，NVIDIA 无法复制 |
-| 核心能力 | 传输 + 存储 | **智能路由 + 弹性伸缩 + 可观测** | InferNex 已验证 E2EL ↓22% |
-| 上游策略 | — | **贡献 Mooncake → 获取 CODEOWNERS** | 席位 = 生态影响力 |
+| 技术栈层级 | 底层存储引擎（跨硬件广覆盖） | **Ascend 深度优化 + 异构互通** | Yuanrong/MemCache 已做 Ascend 底层，openFuyao 通过贡献上游 Mooncake 避免重复 |
+| 硬件策略 | 广度覆盖 4+ 平台，Ascend 通过 HCCL 封装 | **深度优化昇腾 + 灵衢 UB 原生** | CloudMatrix384 实测优势，NVIDIA 无法复制 |
+| 核心能力 | 传输 + 存储 | **NPU 原生 KVCache 优化 + 异构格式互通** | 超节点 + UB 是差异化护城河 |
+| 上游策略 | — | **贡献 Mooncake → 获取 CODEOWNERS** | 席位 = 生态影响力，引导 NPU 支持成为核心路线 |
 
 ### 4.2 核心差异化底座：超节点 + UB 总线
 
@@ -372,19 +366,19 @@ graph TB
 
 ### 5.2 三大突破方向一览表
 
-| 维度 | 方向 1：NPU 原生 KVCache 优化 | 方向 2：异构集群 KVCache 互通 | 方向 3：云原生 KVCache 治理 |
+| 维度 | 方向 1：NPU 原生 KVCache 优化 | 方向 2：异构集群 KVCache 互通 | 方向 3：KVCache 智能管理 |
 |------|------------------------------|------------------------------|---------------------------|
 | **优先级** | **P0** | **P0** | P1 |
-| **一句话定位** | 成为 Ascend NPU 生态的 KVCache 标准实现 | 成为异构推理（Ascend+NVIDIA）的唯一完整编排方案 | 从"组件提供者"升级为"治理平台" |
-| **核心价值** | **硬件级差异化护城河**——NVIDIA NVLink 节点内限 576 GPU，UB 总线节点间延迟 <2μs，超节点扁平化为单一逻辑节点 | **生态桥梁**——Yuanrong 仅 Ascend 无法互通，openFuyao 跨厂商方案不可替代 | **管理层突破**——K8s 原生 KVCache 全生命周期自动化管理 |
-| **核心场景** | A. 智算超节点（910C/950 + UB）<br/>B. 通算超节点（Kunpeng + NPU） | Ascend Prefill + NVIDIA Decode PD 分离 | 超大规模集群智能缓存调度与运维 |
-| **技术突破路径** | A：L0-L1 GVA 零拷贝直访，构建 LingQuCacheTier<br/>B：CPU DRAM 冷存储 + NPU HBM 热缓存分层<br/>通用：Ascend 原生互连深度优化 + 稀疏 KV 子集传输 | ① 格式分析（数据类型/对齐/GQA 组划分差异）<br/>② 双向格式转换层设计（零拷贝）<br/>③ Mooncake TE 异构传输适配<br/>④ Hermes-router 硬件类型感知路由 | ① K8s Operator（预热/淘汰/迁移/压缩 CRD）<br/>② Hermes-router 流量预测主动调度<br/>③ 超节点拓扑感知路由<br/>④ Eagle-eye UB 带宽/延迟监控 |
+| **一句话定位** | 成为 Ascend NPU 生态的 KVCache 标准实现 | 成为异构推理（Ascend+NVIDIA）的唯一完整 KVCache 编排方案 | 从"被动缓存"升级为"主动智能 KVCache 管理" |
+| **核心价值** | **硬件级差异化护城河**——NVIDIA NVLink 节点内限 576 GPU，UB 总线节点间延迟 <2μs，超节点扁平化为单一逻辑节点 | **生态桥梁**——Yuanrong 仅 Ascend 无法互通，openFuyao 跨厂商方案不可替代 | **智能层突破**——流量预测主动预热 + 多级存储智能淘汰 |
+| **核心场景** | A. 智算超节点（910C/950 + UB）<br/>B. 通算超节点（Kunpeng + NPU） | Ascend Prefill + NVIDIA Decode PD 分离 | RAG 前缀复用、Agent 多轮对话、长上下文智能预热 |
+| **技术突破路径** | A：L0-L1 GVA 零拷贝直访，构建 LingQuCacheTier<br/>B：CPU DRAM 冷存储 + NPU HBM 热缓存分层<br/>通用：Ascend 原生互连深度优化 + 稀疏 KV 子集传输 | ① 格式分析（数据类型/对齐/GQA 组划分差异）<br/>② 双向格式转换层设计（零拷贝）<br/>③ Mooncake TE 异构传输适配<br/>④ KVCache 路由感知跨硬件选择 | ① 基于流量预测的主动 KVCache 预热<br/>② 多级存储（HBM/DRAM/SSD）智能淘汰策略<br/>③ 超节点拓扑感知 KVCache 调度（超节点内优先）<br/>④ KVCache 命中率/层级分布/淘汰率深度可观测 |
 | **关键对比基准** | RDMA 4 跳 9-14μs/40-50GB/s<br/>**UB 1 跳 <1μs/>100GB/s** | 同构集群性能的 90%+（损失 <10%） | 超节点内延迟 <2μs vs 跨超节点 5-50μs |
 | **性能目标** | 智算：超节点内 <1μs、>100GB/s<br/>通算：Kunpeng-NPU 110-151GB/s<br/>Ascend 整体对标 GPU 80%+ | 异构 PD 分离性能损失 <10% | 命中率提升 20%+<br/>超节点内命中率 >80% |
-| **Mooncake 上游贡献点** | NPU 专用 Layout Handler（Store）<br/>ADXL Direct 性能优化（TE）<br/>Ascend KVCache 性能基线 | 异构格式转换模块（TE）<br/>通用化后贡献 | — |
+| **Mooncake 上游贡献点** | NPU 专用 Layout Handler（Store）<br/>ADXL Direct 性能优化（TE）<br/>Ascend KVCache 性能基线 | 异构格式转换模块（TE）<br/>通用化后贡献 | KVCache 预热策略、淘汰算法贡献（Store） |
 | **依赖关系** | 无（先行） | 依赖方向 1 格式分析结果 | 依赖方向 1/2 基础能力 |
 | **时间窗口** | Q3 2026 启动，Q1 2027 验证 | Q4 2026 启动，Q1 2027 PoC | Q4 2026 启动，Q2 2027 发布 |
-| **风险** | Yuanrong 已实现 UB 优化（48GB/s H2H），需达到同等水平 | 格式转换零拷贝实现复杂度高 | K8s Operator 生态成熟度 |
+| **风险** | Yuanrong 已实现 UB 优化（48GB/s H2H），需达到同等水平 | 格式转换零拷贝实现复杂度高 | 预测模型准确率依赖历史数据质量 |
 
 ---
 
@@ -437,11 +431,11 @@ graph LR
 |--------|------|---------|------------------|-----------|
 | **M1** | 2026 Q3 | Store Top 5 + Layout Handler PR 合并 | NPU 布局处理器 PR | 昇腾 NPU 适配 |
 | **M1.5** | 2026 Q3 | 灵衢 GVA 直访 PoC 验证 <1μs | UB GVA 后端 RFC 提交 | **灵衢 UB 验证** |
-| **M2** | 2026 Q4 | Reviewer 席位 + InferNex 增强版 | 热缓存架构演进主导 + ADXL PR | 昇腾性能对标 GPU |
+| **M2** | 2026 Q4 | Reviewer 席位 + KVCache 性能对标 GPU | 热缓存架构演进主导 + ADXL PR | 昇腾性能对标 GPU |
 | **M2.5** | 2026 Q4 | Kunpeng+NPU 混合验证 | 通算超节点格式转换 PR | **鲲鹏 950 + 昇腾** |
 | **M3** | 2027 Q1 | 异构互通 PoC | Ascend↔NVIDIA 转换模块 PR | 跨硬件格式转换 |
 | **M3.5** | 2027 Q1 | 超节点 KVCache 能力验证 | DSA 稀疏注意力 Handler PR | 智算超节点验证 |
-| **M4** | 2027 Q2 | 云原生治理平台发布 + CODEOWNERS | 代码审核参与 + 发布决策 | 全栈集成 |
+| **M4** | 2027 Q2 | KVCache 智能管理上线 + CODEOWNERS | 代码审核参与 + 发布决策 | 全栈 KVCache 集成 |
 
 #### 5.5.4 CODEOWNERS 申请触发条件
 
@@ -463,7 +457,7 @@ graph LR
 |------|------|---------|
 | Yuanrong Ascend 性能大幅领先 | Mooncake 社区降低 NPU 优先级 | 持续高质量贡献保持影响力，推动 NPU 成为核心路线图 |
 | Kunpeng 950 上市延迟（目标 Q4） | 通算超节点验证受阻 | 先用 Kunpeng 920 验证 UB 传输可行性 |
-| MemCache 与 openFuyao 定位冲突 | 内部重复投入 | 明确分工：MemCache 底层引擎，openFuyao 上层编排 + 上游贡献 |
+| MemCache 与 openFuyao 定位冲突 | 内部重复投入 | 明确分工：MemCache 做 Ascend 底层引擎，openFuyao 通过 Mooncake 上游做 NPU 优化 |
 | vLLM-Ascend DSA 接口延迟 | 稀疏注意力验证受阻 | 联合对齐排期，同步准备算法侧验证 |
 
 ---
