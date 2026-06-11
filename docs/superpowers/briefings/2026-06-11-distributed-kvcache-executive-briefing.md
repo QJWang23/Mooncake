@@ -344,98 +344,208 @@ graph TB
 
 ---
 
-## 五、生态影响力构建路径与决策建议
+## 五、四大突破方向与 Mooncake 上游深耕路径
 
-### 5.1 路径总览：三阶段获取 Mooncake CODEOWNERS
+### 5.1 四大突破方向总览
+
+```mermaid
+graph TB
+    subgraph P0方向["P0 优先级（0-6个月）"]
+        D1["方向 1<br/>NPU 原生 KVCache 优化<br/>差异化护城河"]
+        D2["方向 2<br/>异构集群 KVCache 互通<br/>生态桥梁"]
+    end
+
+    subgraph P1方向["P1 优先级（持续进行）"]
+        D3["方向 3<br/>云原生 KVCache 治理<br/>管理层突破"]
+        D4["方向 4<br/>上游贡献战略<br/>生态共建"]
+    end
+
+    D1 --> D2
+    D1 --> D4
+    D2 --> D4
+    D3 --> D4
+```
+
+**逻辑依赖**：方向 1 和方向 2 是 P0 并行推进（都需要深入理解 Ascend KVCache 布局）；方向 3 在方向 1/2 基础能力后推进；方向 4 持续进行，将 1/2/3 的产出转化为上游贡献。
+
+---
+
+### 5.2 方向 1：NPU 原生 KVCache 优化（差异化护城河）—— P0
+
+**核心价值**：
+
+> 成为 Ascend NPU 生态的 KVCache 标准实现，在 NPU 上实现与 GPU 上 Mooncake Store 对标的传输性能。这是 openFuyao 区别于 Mooncake/HiCache/LMCache 的 **硬件级差异化护城河**。
+
+**两个子场景的突破路径**：
+
+| 场景 | 硬件架构 | 技术路径 | 性能目标 |
+|------|---------|---------|---------|
+| **A. 智算超节点** | Ascend 910C/950 + UB 全互联 | L0-L1 GVA 零拷贝，构建 LingQuCacheTier | 超节点内延迟 <1μs，带宽 >100 GB/s |
+| **B. 通算超节点** | Kunpeng 950 + Ascend NPU | CPU DRAM 冷存储 + NPU HBM 热缓存 | Kunpeng-NPU 110-151 GB/s |
+
+**关键对比：UB vs RDMA**
+
+| 传输路径 | 跳数 | 延迟 | 带宽 |
+|---------|------|------|------|
+| RDMA（NPU→Host→RDMA→Host→NPU） | 4 跳 | 9-14 μs | 40-50 GB/s |
+| **UB GVA 零拷贝**（NPU→UB→NPU） | **1 跳** | **<1 μs** | **>100 GB/s** |
+
+**Mooncake 上游贡献点**：
+- NPU 专用布局处理器 → Mooncake Store `KVCacheLayoutHandler` 框架
+- Ascend ADXL Direct Transport 性能优化 → Mooncake TE
+- 建立 Ascend NPU KVCache 性能基线 → 持续对标 GPU 版本
+
+---
+
+### 5.3 方向 2：异构集群 KVCache 互通（生态桥梁）—— P0
+
+**核心价值**：
+
+> 成为"Ascend Prefill + NVIDIA Decode"异构部署场景的 **唯一完整 KVCache 编排方案**。Yuanrong 仅支持 Ascend，无法实现跨硬件互通——这是 openFuyao 的 **差异化护城河**。
+
+**技术突破路径**：
+
+1. **格式分析**：深入分析 Ascend vs NVIDIA KVCache 内存布局差异（数据类型、内存对齐、GQA 组划分方式）
+2. **转换层设计**：设计高效双向格式转换层，支持零拷贝策略
+3. **异构传输优化**：在 Mooncake TE（HCCL + RDMA）基础上补充格式适配层
+4. **路由策略扩展**：Hermes-router 增加"硬件类型感知"维度，选择转换开销最小路径
+
+**预期成果**：异构集群 PD 分离性能损失控制在同构集群的 **10% 以内**
+
+---
+
+### 5.4 方向 3：云原生 KVCache 治理（管理层突破）—— P1
+
+**核心价值**：
+
+> 从"组件提供者"升级为"治理平台"，通过 K8s Operator 实现 KVCache 全生命周期自动化管理——这是上层编排定位的具体落地。
+
+**技术突破路径**：
+
+| 功能 | 技术实现 | 预期成果 |
+|------|---------|---------|
+| **生命周期管理** | K8s Operator + CRD（预热/淘汰/迁移/压缩） | 运维策略声明化 |
+| **主动缓存调度** | Hermes-router + 流量预测模型 | 命中率提升 20%+ |
+| **超节点拓扑感知** | 优先超节点内匹配（延迟 <2μs vs 跨超节点 5-50μs） | 超节点内命中率 >80% |
+| **UB 监控扩展** | Eagle-eye UB 带宽/延迟/GVA 空间监控 | 形成运维闭环 |
+
+---
+
+### 5.5 方向 4：Mooncake 上游深耕路径（生态共建）—— P1
+
+**核心定位**：成为 Mooncake 核心 Maintainer 之一，通过持续高质量贡献建立技术影响力，使 openFuyao 成为 Mooncake 生态中 **异构 NPU 方向的权威贡献者**。
+
+#### 5.5.1 Mooncake 深耕领域
+
+基于方向 1/2/3 的技术产出，确定 Mooncake 上游深耕的四个高价值领域：
+
+| 深耕领域 | 具体贡献点 | PR 类型 | 对应突破方向 |
+|---------|-----------|---------|-------------|
+| **布局处理器框架** | NPU 专用 Handler（Ascend 内存布局适配） | Store PR | 方向 1 |
+| **传输引擎优化** | ADXL Direct Transport 性能优化、UB GVA 后端 | TE PR | 方向 1 |
+| **异构格式转换** | Ascend↔NVIDIA KVCache 格式转换模块 | TE PR | 方向 2 |
+| **新注意力机制** | DSA 稀疏注意力 Handler（紧跟 DeepSeek/Qwen/GLM 发布） | Store PR | 方向 4 |
+
+#### 5.5.2 三阶段节奏路标
 
 ```mermaid
 graph LR
-    subgraph Q2Q3["阶段一 Q2-Q3<br/>核心贡献者"]
-        A1["Layout Handler PR"]
-        A2["Store Top 5"]
+    subgraph 阶段一["阶段一 Q2-Q3：核心贡献者确立"]
+        A1["RFC: Layout Handler"]
+        A2["PR: NPU Handler 合并"]
+        A3["PR: 热缓存优化 5+ 合并"]
+        A4["Store Top 5 贡献者"]
     end
 
-    subgraph Q3Q4["阶段二 Q3-Q4<br/>模块主导权"]
-        B1["主导热点缓存<br/>架构演进"]
-        B2["Reviewer 席位"]
+    subgraph 阶段二["阶段二 Q3-Q4：模块主导权申请"]
+        B1["主导热点缓存<br/>架构演进讨论"]
+        B2["PR: ADXL 性能优化"]
+        B3["PR: UB GVA 后端"]
+        B4["Reviewer 席位申请"]
     end
 
-    subgraph Q4Q1["阶段三 Q4-Q1<br/>CODEOWNERS"]
-        C1["20+ commits"]
-        C2["CODEOWNERS 权限"]
+    subgraph 阶段三["阶段三 Q4-Q1: CODEOWNERS 申请"]
+        C1["累计 20+ commits"]
+        C2["3+ 高价值 PR<br/>代表作"]
+        C3["Review 10+ 次"]
+        C4["CODEOWNERS 权限"]
     end
 
-    Q2Q3 --> Q3Q4 --> Q4Q1
+    阶段一 --> 阶段二 --> 阶段三
 ```
 
-### 5.2 四个差异化技术切入点
+#### 5.5.3 关键里程碑与验收标准
 
-| 优先级 | 切入点 | 已有基础 | 竞争优势 |
-|--------|--------|---------|---------|
-| **P0** | KVCache Layout Handler | GQA/MLA/Hybrid 代码已完成 | 仅 @ykwd 深度理解（来源：本文分析） |
-| **P0** | Ascend NPU 适配 + 灵衢直访 | 热缓存 PR 5+（来源：[SIG 运作报告]） | 灵衢联合验证独有 |
-| **P1** | 热点缓存架构演进 | TTFT ↓55-93%（来源：[SIG v25.12]） | 可主导架构讨论 |
-| **P1** | 稀疏注意力布局处理器 | 设计完成 | **社区空白**（来源：本文分析） |
+| 里程碑 | 时间 | 验收标准 | Mooncake 深耕内容 | 硬件结合点 |
+|--------|------|---------|------------------|-----------|
+| **M1** | 2026 Q3 | Store Top 5 + Layout Handler PR 合并 | NPU 布局处理器 PR | 昇腾 NPU 适配 |
+| **M1.5** | 2026 Q3 | 灵衢 GVA 直访 PoC 验证 <1μs | UB GVA 后端 RFC 提交 | **灵衢 UB 验证** |
+| **M2** | 2026 Q4 | Reviewer 席位 + InferNex 增强版 | 热缓存架构演进主导 + ADXL PR | 昇腾性能对标 GPU |
+| **M2.5** | 2026 Q4 | Kunpeng+NPU 混合验证 | 通算超节点格式转换 PR | **鲲鹏 950 + 昇腾** |
+| **M3** | 2027 Q1 | 异构互通 PoC | Ascend↔NVIDIA 转换模块 PR | 跨硬件格式转换 |
+| **M3.5** | 2027 Q1 | 超节点 KVCache 能力验证 | DSA 稀疏注意力 Handler PR | 智算超节点验证 |
+| **M4** | 2027 Q2 | 云原生治理平台发布 + CODEOWNERS | 代码审核参与 + 发布决策 | 全栈集成 |
 
-### 5.3 关键里程碑
+#### 5.5.4 CODEOWNERS 申请触发条件
 
-| 里程碑 | 时间 | 验收标准 | 硬件结合点 |
-|--------|------|---------|-----------|
-| **M1** | 2026 Q3 | Store Top 5 贡献者 | 昇腾 NPU 适配层 |
-| **M1.5** | 2026 Q3 | 灵衢 GVA 直访 PoC <1μs | **灵衢 UB 验证** |
-| **M2** | 2026 Q4 | Reviewer 席位 + InferNex 增强 | 昇腾性能对标 GPU |
-| **M2.5** | 2026 Q4 | Kunpeng+NPU 混合验证 | **鲲鹏 950 + 昇腾** |
-| **M3** | 2027 Q1 | 异构互通 PoC | Ascend↔NVIDIA 格式转换 |
-| **M4** | 2027 Q2 | 云原生治理平台 | 全栈集成 |
+必须同时满足：
 
-### 5.4 核心风险与缓解
+- [x] 累计 **20+ Store commits**
+- [x] 获得 **1 位现有 CODEOWNER 公开认可**（@ykwd 或 @stmatengss）
+- [x] 有 **3+ 高价值 PR** 作为代表作：
+  1. NPU Layout Handler（方向 1）
+  2. 热缓存架构优化（方向 1）
+  3. 异构格式转换模块（方向 2）或 DSA Handler（方向 4）
+- [x] 持续 Review 他人 PR **10+ 次**
 
-| 风险 | 缓解措施 |
-|------|---------|
-| Yuanrong Ascend 性能领先 | 持续贡献保持影响力，推动 NPU 成为核心路线图 |
-| Kunpeng 950 延迟 | 先用 Kunpeng 920 验证 UB 传输可行性 |
-| MemCache 定位冲突 | 明确分工：MemCache 底层引擎，openFuyao 上层编排 |
+---
 
-### 5.5 成功指标
+### 5.6 核心风险与缓解
 
-| 指标 | 当前 | 2026 Q4 | 2027 Q2 |
-|------|------|---------|---------|
-| Store commits | ~10 | 35+ | 50+ |
-| CODEOWNERS 状态 | 无 | **Reviewer** | **CODEOWNERS** |
-| 超节点 KVCache 延迟 | 未验证 | GVA PoC | 生产级 |
-| InferNex E2EL | 22% | 30%+ | 40%+ |
+| 风险 | 影响 | 缓解措施 |
+|------|------|---------|
+| Yuanrong Ascend 性能大幅领先 | Mooncake 社区降低 NPU 优先级 | 持续高质量贡献保持影响力，推动 NPU 成为核心路线图 |
+| Kunpeng 950 上市延迟（目标 Q4） | 通算超节点验证受阻 | 先用 Kunpeng 920 验证 UB 传输可行性 |
+| MemCache 与 openFuyao 定位冲突 | 内部重复投入 | 明确分工：MemCache 底层引擎，openFuyao 上层编排 + 上游贡献 |
+| vLLM-Ascend DSA 接口延迟 | 稀疏注意力验证受阻 | 联合对齐排期，同步准备算法侧验证 |
 
-### 5.6 下一步行动建议（决策建议）
+---
+
+### 5.7 下一步行动建议
 
 **立即启动（本周）**：
 
-| 行动 | 负责人 | 目标 |
-|------|--------|------|
-| 发起 Layout Handler RFC Issue | 技术负责人 | 进入 Mooncake 社区讨论，展示设计深度 |
-| 完善已有代码实现（GQA/MLA/Hybrid） | 开发团队 | RFC 定稿后提交 PR |
+| 行动 | 负责人 | Mooncake 深耕点 |
+|------|--------|----------------|
+| 发起 Layout Handler RFC Issue | 技术负责人 | Store 布局处理器框架讨论 |
+| 完善 GQA/MLA/Hybrid Handler 代码 | 开发团队 | RFC 定稿后提交 PR |
 
 **近期推进（Q3 2026）**：
 
-| 行动 | 目标 | 协调需求 |
-|------|------|---------|
-| 热点缓存优化 PR 合并 | Store Top 5 贡献者 | 与 Mooncake Maintainer (@ykwd) 沟通 |
-| 灵衢 GVA 直访 PoC 启动 | UB 零拷贝验证 | 申请灵衢联合测试环境 |
+| 行动 | 目标 | Mooncake 深耕点 |
+|------|------|----------------|
+| 热点缓存优化 PR 合并 | Store Top 5 贡献者 | 热缓存模块持续贡献 |
+| 灵衢 GVA 直访 PoC 启动 | UB 零拷贝验证 | TE UB GVA 后端 RFC |
+| ADXL Direct 性能优化 | Ascend 传输优化 | TE Ascend 优化 PR |
 
-**中期推进（Q4 2026）**：
+**中期推进（Q4 2026 - Q1 2027）**：
 
-| 行动 | 目标 | 前置条件 |
-|------|------|---------|
-| 申请 Store Reviewer 席位 | CODEOWNERS 申请资格 | M1 达成 + 1 位 CODEOWNER 认可 |
-| Kunpeng 950 + NPU 混合验证 | 通算超节点能力 | Kunpeng 950 上市 |
+| 行动 | 目标 | Mooncake 深耕点 |
+|------|------|----------------|
+| 申请 Store Reviewer 席位 | CODEOWNERS 申请资格 | 参与代码审核 |
+| Kunpeng+NPU 混合验证 | 通算超节点能力 | 格式转换模块 PR |
+| 异构互通 PoC | Ascend↔NVIDIA | 异构转换层 PR |
+| DSA Handler 实现 | 稀疏注意力适配 | 新 Handler PR |
 
 **待协调事项**：
 
 | 事项 | 协调对象 | 目的 |
 |------|---------|------|
-| 与 Yuanrong/MemCache 明确分工 | 产品线 | 避免内部竞争，明确定位边界 |
-| 申请灵衢联合测试环境 | 灵衢团队 | 硬件验证资源 |
-| vLLM-Ascend DSA 接口对齐 | vLLM-Ascend 团队 | 稀疏注意力验证前提 |
+| 与 Yuanrong/MemCache 明确分工 | 产品线 | 避免内部竞争，明确上游贡献边界 |
+| 申请灵衢联合测试环境 | 灵衢团队 | UB GVA PoC 硬件验证资源 |
+| vLLM-Ascend DSA 接口对齐 | vLLM-Ascend 团队 | DSA Handler 验证前提 |
+| Mooncake Maintainer 沟通 | @ykwd/@stmatengss | 建立技术信任，获取认可 |
 
 ---
 
-> **数据来源**：详见完整版技术洞察报告 `docs/superpowers/insights/2026-06-10-distributed-kvcache-technology-insight.md` 附录 B
+> **数据来源**：详见完整版技术洞察报告 `docs/superpowers/insights/2026-06-10-distributed-kvcache-technology-insight.md` Section 5.3-5.4 及附录 B
