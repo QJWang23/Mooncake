@@ -9,31 +9,79 @@ source: 2026-06-10-distributed-kvcache-technology-insight.md（凝练）
 
 ## 一、行业痛点洞察
 
-### 核心问题
-LLM 推理中 KVCache 管理已成为核心性能瓶颈：
-- 占用 GPU HBM 的 60-80%
-- 长上下文场景下单请求 KVCache 可达数十 GB
-- 重计算开销随上下文窗口扩展线性增长
+### 核心瓶颈
+KVCache 占用 GPU HBM 的 60-80%，长上下文场景单请求 KVCache 可达数十 GB。上下文窗口从 4K 扩展到 128K 甚至 1M tokens，重计算开销线性增长，严重制约推理吞吐和延迟。
 
 ### 范式跃迁
-分布式 KVCache 正从"PD 分离的传输管道"演变为"多层级、多注意力机制、异构硬件的智能存储系统"，关键维度：
+分布式 KVCache 正从"PD 分离的传输管道"演变为"多层级、多注意力机制、异构硬件的智能存储系统"：
 1. 存储层级深化：GPU HBM → CPU DRAM → SSD → 远程存储
 2. 注意力机制多样化：MHA → GQA → MLA → Hybrid → DSA
 3. 异构硬件支持：NVIDIA → AMD → Ascend → Moore Threads
 4. 生态集成深化：独立组件 → 推理引擎内嵌 → 注意力感知调度
 
-### 关键数据点（全部保留）
+### 六大生产场景痛点与数据
+
+#### 场景 1：Coding Agent（代码智能体）
+**痛点**：System prompt（10K+ tokens）+ 代码库上下文（50K+ tokens）在每次查询中被重复 prefill，KVCache 无法跨请求高效复用。Cursor、GitHub Copilot、Claude Code 等工具每次交互的 prefill 开销占总延迟 60-80%。
+**数据**：
+- Anthropic Prompt Caching：长提示场景降低 ~90% 成本、~85% 延迟（[Anthropic Blog, 2024-08](https://www.anthropic.com/news/prompt-caching)）
+- Mooncake Store + vLLM：吞吐提升 3.8x，TTFT 降低 46x（[vLLM Blog, 2026-05-06](https://vllm.ai/blog/2026-05-06-mooncake-store)）
+- Mooncake 热缓存优化：TTFT 降低 55-93%，跨节点延迟从 881ms 降至 287ms（v25.12，openFuyao 贡献）
+**对应趋势**：→ 趋势 1（存储层级深化），共享前缀 KVCache 需分层存储和快速复用
+
+#### 场景 2：多轮对话（Multi-turn Dialogue）
+**痛点**：对话历史线性增长，KVCache 在 HBM 中累积，内存压力持续增大。百万级并发对话的 KVCache 总量可达 TB 级。Kimi、ChatGPT 等平台需管理海量并发对话的 KVCache 生命周期，传统"全量驻留 HBM"模式不可持续。
+**数据**：
+- Mooncake 支撑 Kimi K2 在 128xH200 上实现 224k/288k tokens/sec（prefill/decode）（[Mooncake GitHub](https://github.com/kvcache-ai/Mooncake/)）
+- Mooncake 论文：KVCache 存储将 HBM 利用率从 20-40% 提升至 60-80%（[arXiv 2407.00079](https://arxiv.org/abs/2407.00079)，FAST 2025 Best Paper）
+- openFuyao InferNex PD KVCache 感知路由：E2EL 改善 22.08%（[openFuyao v26.03 Release](https://www.openfuyao.cn/zh/blogs/blogsList/openFuyao-26-03-released/)）
+**对应趋势**：→ 趋势 1 + 趋势 3，对话历史需分层存储 + 感知调度
+
+#### 场景 3：RAG（检索增强生成）
+**痛点**：文档前缀 KVCache 可跨查询复用，但传统方案每次查询重新计算。共享 system prompt + 检索文档的前缀 KVCache 计算量占总量的 70-90%。传统全量加载策略效率低下，需细粒度分块匹配。
+**数据**：
+- LMCache CacheBlend：RAG 场景接近 100% KVCache 命中率，获 EuroSys 2025 Best Paper（[CacheBlend 论文](https://dl.acm.org/doi/10.1145/3700250.3704832)）
+- LMCache + Mooncake（8xH800 Qwen2.5-72B）：TTFT 降低 69.1%，吞吐提升 191%（[LMCache Blog](https://blog.lmcache.ai)）
+- LMCache 256-token 细粒度分块：仅加载实际命中的 KV 块，相比全量 sequence 分块复用效率显著提升
+**对应趋势**：→ 趋势 1 + 趋势 2，细粒度分块 + 跨请求智能混合
+
+#### 场景 4：长上下文推理（128K-1M tokens）
+**痛点**：KVCache 大小随上下文线性增长。70B 模型 128K 上下文的 KVCache 约 20-40GB，1M tokens 可达 80-300GB，远超单卡 HBM 容量（40-80GB）。TTFT 随上下文长度爆炸式增长，GPU HBM 成为硬瓶颈。
+**数据**：
+- HiCache：最高 6x 吞吐提升，80% TTFT 降低（[SGLang Blog, 2025-09-10](https://lmsys.org/blog/2025-09-10-sglang-hicache/)）
+- HiCache GPU 辅助 I/O 内核：标准 cudaMemcpy 的 3x 吞吐，将 CPU DRAM 层从"低效中间缓存"转变为"高效扩展存储"
+- CloudMatrix384 实测：KVCache 90% 重用率下 TTFT 降低 59%，预填充吞吐提升 2.28x（[arXiv CloudMatrix384 论文](https://arxiv.org/abs/2407.00079)）
+**对应趋势**：→ 趋势 1 + 趋势 2，分层存储 + 稀疏注意力活跃子集驻留
+
+#### 场景 5：Agent 工作流（多步推理）
+**痛点**：Agent 每一步推理需维护完整上下文，KVCache 在多步调用间迁移。PD 分离场景下 Prefill 节点产生的 KVCache 需高效传输到 Decode 节点，跨节点传输延迟成为瓶颈。多步推理的累积上下文可达 100K+ tokens。
+**数据**：
+- 蚂蚁集团 DeepSeek-R1-671B + Mooncake Store 后端：TTFT 降低 84%（[SGLang HiCache Blog](https://lmsys.org/blog/2025-09-10-sglang-hicache/)）
+- 华为 UB GVA 零拷贝传输：延迟 <1μs（vs 传统 RDMA 9-14μs），带宽 >100 GB/s（vs 40-50 GB/s）
+- vLLM-Ascend PD 分离验证：Mooncake 后端跨节点 KVCache 传输可行（[vLLM-Ascend Docs](https://docs.vllm.ai/projects/ascend/en/v0.11.0/tutorials/multi_node_pd_disaggregation_mooncake.html)）
+**对应趋势**：→ 趋势 3（异构硬件 + 生态集成深化），KVCache 跨节点迁移 + 感知调度
+
+#### 场景 6：MoE 模型与新型注意力（DeepSeek V3 / GLM-5.1）
+**痛点**：MLA 压缩 KVCache 到低维潜在向量，但需解压计算权衡。DSA 仅保留活跃 KV 子集，存储范式从"全量存储"变为"稀疏索引"。Hybrid 模型同一模型内部不同层使用不同注意力模式，KVCache 格式不统一。
+**数据**：
+- MLA（DeepSeek V2/V3）：4-8x 存储缩减，但传输时需权衡压缩格式 vs 解压计算（[DeepSeek-V2 Technical Report, arXiv 2405.04434](https://arxiv.org/abs/2405.04434)）
+- HiSparse（GLM-5.1 DSA）：仅保留活跃 KV 子集，长上下文场景 5x 吞吐提升（[SGLang Blog, 2026-04-10](https://lmsys.org/blog/2026-04-10-sglang-hisparse/)）
+- Mooncake Store 已实现 MHA/GQA/MLA/Hybrid 四种布局处理器（magic: MHAC/GACK/MLAC/HYBD），DSA 规划中
+**对应趋势**：→ 趋势 2（注意力机制多样化与稀疏化），可插拔布局适配 + 稀疏索引
+
+### 关键性能数据汇总
 
 | 系统/特性 | 性能数据 | 来源 |
 |-----------|---------|------|
-| Mooncake Store + vLLM | 吞吐提升 3.8x，TTFT 降低 46x | vLLM Blog 2026-05-06 |
-| Mooncake 为 Kimi K2（128xH200） | 224k/288k tokens/sec（prefill/decode） | Mooncake GitHub README |
-| HiCache | 最高 6x 吞吐提升，80% TTFT 降低 | SGLang Blog 2025-09-10 |
-| 蚂蚁集团（DeepSeek-R1-671B + Mooncake） | TTFT 降低 84% | SGLang HiCache Blog |
-| HiSparse（GLM-5.1 长上下文） | 5x 吞吐提升 | SGLang Blog 2026-04-10 |
-| LMCache CacheBlend（RAG 场景） | 接近 100% KVCache 命中率 | EuroSys 2025 Best Paper |
-| LMCache + Mooncake（8xH800 Qwen2.5-72B） | TTFT 降低 69.1%，吞吐提升 191% | LMCache Blog |
-| openFuyao InferNex（PD KVCache 感知路由） | E2EL 改善 22.08% | openFuyao v26.03 Release |
+| Mooncake Store + vLLM | 吞吐提升 3.8x，TTFT 降低 46x | [vLLM Blog 2026-05-06](https://vllm.ai/blog/2026-05-06-mooncake-store) |
+| Mooncake / Kimi K2（128xH200） | 224k/288k tokens/sec（prefill/decode） | [Mooncake GitHub](https://github.com/kvcache-ai/Mooncake/) |
+| HiCache | 最高 6x 吞吐提升，80% TTFT 降低 | [SGLang Blog 2025-09-10](https://lmsys.org/blog/2025-09-10-sglang-hicache/) |
+| 蚂蚁集团（DeepSeek-R1-671B + Mooncake） | TTFT 降低 84% | [SGLang HiCache Blog](https://lmsys.org/blog/2025-09-10-sglang-hicache/) |
+| HiSparse（GLM-5.1 长上下文 DSA） | 5x 吞吐提升 | [SGLang Blog 2026-04-10](https://lmsys.org/blog/2026-04-10-sglang-hisparse/) |
+| LMCache CacheBlend（RAG 场景） | 接近 100% KVCache 命中率 | [EuroSys 2025 Best Paper](https://dl.acm.org/doi/10.1145/3700250.3704832) |
+| LMCache + Mooncake（8xH800 Qwen2.5-72B） | TTFT 降低 69.1%，吞吐提升 191% | [LMCache Blog](https://blog.lmcache.ai) |
+| Anthropic Prompt Caching | ~90% 成本降低，~85% 延迟降低 | [Anthropic Blog 2024-08](https://www.anthropic.com/news/prompt-caching) |
+| openFuyao InferNex（PD KVCache 感知路由） | E2EL 改善 22.08% | [openFuyao v26.03 Release](https://www.openfuyao.cn/zh/blogs/blogsList/openFuyao-26-03-released/) |
 
 ## 二、主流组件全景对比
 
@@ -50,14 +98,20 @@ LLM 推理中 KVCache 管理已成为核心性能瓶颈：
 | **核心创新** | Transfer Engine 统一抽象、Layout Handler 框架 | GPU 辅助 I/O 内核（3x cudaMemcpy）、HiRadixTree 基数树 | CacheBlend 跨请求 KVCache 混合、256-token 细粒度分块 | Ascend 原生互连（device_rdma/sdma/host_urma） | 透明分层、UB 总线 48GB/s H2H、分布式元数据 | Hermes-router 智能路由、弹性扩展器、Eagle-eye 可观测性 |
 | **开源状态** | MIT（加入 PyTorch 组织） | Apache 2.0 | Apache 2.0 | 华为内部（未开源） | Apache 2.0（openEuler 社区） | Apache 2.0 |
 
-### 架构设计哲学对比表
+### 架构设计哲学对比
 
-| 设计维度 | Mooncake | HiCache + SGLang | LMCache | Yuanrong |
-|---------|----------|------------------|---------|----------|
-| **核心哲学** | KVCache-first + 跨硬件统一抽象 | 推理引擎内层缓存 + 极简插件后端 | 知识交付网络（KDN） + 中间桥接层 | 内存中心 + 分布式元数据 + Serverless 原生 |
-| **元数据架构** | 集中式 Master | RadixAttention 基数树 | Token Database 集中 | 分布式 Object Directory（位置编码 O(1) 寻址） |
-| **硬件策略** | 广度优先（4+ 平台） | NVIDIA 主力 | NVIDIA 聚焦 | 深度优先（Ascend UB 原生） |
-| **引擎集成** | 引擎中立 | 深度绑定 SGLang | 深度绑定 vLLM | vLLM-Ascend / veRL |
+下图以四列并排方式呈现四大组件的架构层级与设计哲学差异，黄色注释框标注各系统的核心取舍：
+
+![分布式 KVCache 四大组件架构设计哲学对比](images/architecture-design-philosophy-comparison.svg)
+
+**设计哲学一句话总结：**
+
+| 系统 | 核心取舍 | 设计哲学 |
+|------|---------|---------|
+| **Mooncake** | 以略微牺牲单平台极致性能换取跨硬件统一性和生产可靠性 | KVCache-first + 跨硬件统一抽象（广度优先，4+ 硬件平台） |
+| **HiCache + SGLang** | 以放弃引擎中立性换取调度深度协同和后端生态低门槛 | 推理引擎内嵌 + 极简插件后端（深度绑定 SGLang RadixAttention） |
+| **LMCache** | 不与 Mooncake 竞争底层存储，通过 CacheBlend 占据 vLLM "知识管理者"角色 | 知识交付网络（KDN）+ 中间桥接层（256-token 细粒度分块 + CacheBlend 混合） |
+| **Yuanrong** | 以放弃跨硬件覆盖换取 10K+ 卡规模元数据无瓶颈 | 深度优先（Ascend UB 原生互连，分布式 Object Directory O(1) 寻址） |
 
 ### 三大关键判断
 

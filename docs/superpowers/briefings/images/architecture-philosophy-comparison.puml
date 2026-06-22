@@ -1,0 +1,129 @@
+@startuml architecture-design-philosophy-comparison
+' Architecture Design Philosophy Comparison
+' 4 systems side-by-side, highlighting key architectural differences
+
+skinparam backgroundColor #FEFEFE
+skinparam shadowing false
+skinparam roundCorner 10
+skinparam defaultFontSize 11
+skinparam arrowThickness 1.2
+skinparam componentStyle rectangle
+
+skinparam node {
+  BackgroundColor #F5F5F5
+  BorderColor #666666
+  FontSize 10
+}
+
+skinparam database {
+  BackgroundColor #FFF8E1
+  BorderColor #F57C00
+}
+
+skinparam cloud {
+  BackgroundColor #E3F2FD
+  BorderColor #1976D2
+}
+
+skinparam rectangle {
+  FontSize 11
+  FontColor #333333
+}
+
+title 分布式 KVCache 四大组件架构设计哲学对比
+
+' ============ Mooncake ============
+together {
+  rectangle "**Mooncake**\nKVCache-first + 跨硬件统一抽象" as MK #FFF3E0 {
+    rectangle "推理引擎层\n(多引擎中立)" as MK_ENG #FAFAFA
+    rectangle "Client SDK\nPut/Get/Query" as MK_SDK #E8F5E9
+    database "集中式 Master\n元数据 + 副本管理" as MK_MASTER #FFF8E1
+    rectangle "Layout Handler 框架\nMHA|GQA|MLA|Hybrid (可插拔)" as MK_HANDLER #E8F5E9
+    rectangle "Transfer Engine\nTCP|RDMA|NVLink|HCCL|HIP|MUSA\n(10+ 协议, 4+ 硬件)" as MK_TE #E3F2FD
+    rectangle "3层存储\nHBM→DRAM→SSD" as MK_STORE #FAFAFA
+
+    MK_ENG --> MK_SDK
+    MK_SDK --> MK_MASTER
+    MK_SDK --> MK_HANDLER
+    MK_HANDLER --> MK_STORE
+    MK_STORE --> MK_TE
+  }
+
+  note bottom of MK
+    **核心取舍**: 广度覆盖 (4+ 硬件平台)
+    以略微牺牲单平台极致性能为代价
+    换取跨硬件统一性和生产可靠性
+  end note
+}
+
+' ============ HiCache + SGLang ============
+together {
+  rectangle "**HiCache + SGLang**\n推理引擎内嵌 + 极简插件后端" as HC #E8F5E9 {
+    rectangle "SGLang 引擎\nRadixAttention 基数树" as HC_ENG #FAFAFA
+    rectangle "HiRadixTree\n分层页表统一索引" as HC_RADIX #E8F5E9
+    rectangle "GPU 辅助 I/O 内核\n3x cudaMemcpy 吞吐" as HC_IO #E3F2FD
+    rectangle "3层缓存\nGPU→CPU→远程" as HC_STORE #FAFAFA
+    rectangle "极简后端接口\nget() / exist() / set()" as HC_IF #FFF3E0
+
+    HC_ENG --> HC_RADIX
+    HC_RADIX --> HC_IO
+    HC_RADIX --> HC_STORE
+    HC_STORE --> HC_IF
+  }
+
+  note bottom of HC
+    **核心取舍**: 深度引擎绑定 SGLang
+    以放弃引擎中立为代价
+    换取调度深度协同和后端生态低门槛
+  end note
+}
+
+' ============ LMCache ============
+together {
+  rectangle "**LMCache**\n知识交付网络 (KDN) + 中间桥接层" as LMC #FCE4EC {
+    rectangle "vLLM 引擎\nKV Connector" as LMC_ENG #FAFAFA
+    rectangle "CacheBlend\n跨请求 KV 混合\n~100% RAG 命中率" as LMC_BLEND #FCE4EC
+    rectangle "Token Database\n256-token 细粒度分块" as LMC_DB #FFF8E1
+    rectangle "4层缓存\nGPU→CPU→NVMe GDS→远程" as LMC_STORE #FAFAFA
+    rectangle "双模运行\n存储模式 + 传输模式" as LMC_MODE #E8F5E9
+
+    LMC_ENG --> LMC_BLEND
+    LMC_BLEND --> LMC_DB
+    LMC_DB --> LMC_STORE
+    LMC_STORE --> LMC_MODE
+  }
+
+  note bottom of LMC
+    **核心取舍**: 管理层定位 + 智能化能力
+    不与 Mooncake 竞争底层存储
+    通过 CacheBlend 占据 vLLM "知识管理者"角色
+  end note
+}
+
+' ============ Yuanrong ============
+together {
+  rectangle "**Yuanrong**\n内存中心 + 分布式元数据 + Serverless" as YR #E3F2FD {
+    rectangle "vLLM-Ascend / veRL" as YR_ENG #FAFAFA
+    rectangle "分布式 Object Directory\n位置编码 O(1) 寻址\n(去中心化元数据)" as YR_META #E3F2FD
+    rectangle "透明分层\nHBM→DRAM→SSD\n(应用无感知)" as YR_STORE #FAFAFA
+    rectangle "Ascend 原生互连\nD2D|H2D|H2H(UB 48GB/s)\n(Ascend 仅)" as YR_TRANSPORT #E3F2FD
+    rectangle "多语义接口\nKV / Object / Heterogeneous" as YR_API #E8F5E9
+
+    YR_ENG --> YR_API
+    YR_API --> YR_META
+    YR_META --> YR_STORE
+    YR_STORE --> YR_TRANSPORT
+  }
+
+  note bottom of YR
+    **核心取舍**: 深度优先 (Ascend UB 原生)
+    以放弃跨硬件覆盖为代价
+    换取 10K+ 卡规模元数据无瓶颈
+  end note
+}
+
+' ============ Cross-references ============
+MK ..> LMC : "战略合作\n(2025.05 桥接层)"
+MK ..> HC : "远程存储后端"
+
+@enduml
