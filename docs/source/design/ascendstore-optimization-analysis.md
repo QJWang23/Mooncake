@@ -4,6 +4,7 @@
 > 编制：Qingjun Wang
 > 日期：2026-08-13，更新：2026-08-14
 > 工作量换算基准：3K LOC = 1 人月
+> 标注说明：★ = 上游已有实现或已合入；☆ = 需新增构建；◎ = 与已有条目有重复
 
 ---
 
@@ -23,384 +24,285 @@
 | NVMe KV Backend | nvme_kv_backend.h, nvme_kv_connector.h, nvme_kv_executor.h | ~300 |
 | Device Abstraction | device/accelerator_device.h, accelerator_registry.h, runtime_accelerator.h, cuda_ipc_buffer.h | ~400 |
 | HA Components | ha/ directory, ha_metric_manager.h, hot_standby_service.h, standby_state_machine.h, master_snapshot_manager.h | ~800 |
+| Pinned Buffer | pinned_buffer_pool.h, pinned_host_buffer.h, aligned_client_buffer.h, client_buffer.h | ~400 |
+| K8s Lease | k8s_lease_helper.h | ~60 |
+| Deadline Scheduler | deadline_scheduler.h | ~100 |
 
 ---
 
-## 2. 需求一：L4 共享盘存储缓存适配（仅昇腾）
+## 2. 需求一：Layerwise 池化传输与 DSA KV Offload 接口诉求
+
+> 诉求来源：vLLM-Ascend 对 Mooncake 能力的诉求。当前为实现高性能分层 D2RH、RH2D 传输，主要涉及 Mooncake Layerwise 池化传输和 DSA KV Offload 场景，对 Mooncake 接口有新诉求。
 
 ### 2.1 现状分析（代码级）
 
-> ★ 重大更新：Mooncake main 分支已新增 `DfsReplicaData` + `DistributedStorageBackend` + `DfsGlobalAllocator`，L4 共享盘存储的框架级抽象**已存在**，但昇腾环境未穿刺验证。原报告中"无共享存储寻址能力"的结论已过时。
+**(1) 上游已有 Layerwise Session API（RFC #2887 + PR #2881）**
+
+Mooncake main 分支已合入 Layerwise KV Cache Session-Based Ranged Transfer：
+- RFC #2887 提出基于 session 的 ranged transfer API：Master 元数据查询一次，后续逐层传输不再重复查询
+- PR #2881 实现 Store session APIs：`batch_get_session_start` -> `batch_get_into_multi_buffer_ranges` -> `batch_get_session_end` / `batch_put_session_start` -> `batch_put_from_multi_buffer_ranges` -> `batch_put_session_end` / `batch_put_session_revoke`
+- Get session 缓存 `QueryResult`（含完整 memory replica），range 路径仅用缓存（无 Master RPC）
+- Session ranged transfers 通过 `Client::BatchTransferReadRanges` / `BatchTransferWriteRanges`
+
+**(2) 上游已有 Host Buffer 分配 API（PR #3019）**
+
+PR #3019 添加 `mooncake.engine.allocate_host_buffer` / `free_host_buffer`：
+- 为 decode offload + ACL graph capture 提供固定 host buffer 地址
+- Ascend 构建（USE_ASCEND_DIRECT）：`ascend_allocate_memory`（fabric mem 或 `aclrtMallocHost`）
+- 非 Ascend 构建：`aligned_alloc(4096, ...)` / `free`
+- 无状态 API，不注册 TE，调用方需单独 `register_memory`
+
+**(3) 上游已有 Shared Host Segment RFC（RFC #3249）**
+
+RFC #3249 提出 `create_shared_segment` API：one-writer-many-reader KV 布局（MLA sparse KV decode offload），TP 组内 KV payload 相同，单 rank 写入 + 全组读取，避免 per-rank 内存浪费（TP16 下节省 16x）。
+
+**(4) 上游已有 GDS Offload 支持（Issue #2731 + PR #3491）**
+
+Issue #2731 描述 GDS（GPU Direct Storage）架构，支持 standalone-store 模式下 SSD offload 直接到 GPU/NPU。
+
+### 2.2 需求拆解
+
+| 子任务 | 描述 | 上游现状 | InferNex 适配 | 工作量（人月） |
+|--------|------|----------|-------------|-------------|
+| 1A. batch_alloc_buffer() | 手动申请 DRAM BUFFER | ★ PR #3019 `allocate_host_buffer` 已合入；`pinned_buffer_pool.h` / `aligned_client_buffer.h` 已有 buffer 分配框架 | ☆ 昇腾环境适配验证（aclrtMallocHost 路径） | 0.30 |
+| 1B. batch_get_key_info() | 查询命中时直接获取 key 对应 GVA 地址信息 | ★ PR #2881 session API 已合入 `batch_get_session_start` 缓存 QueryResult（含 replica descriptor + GVA 地址）；`replica.h:222` DistributedFSDescriptor 含 transport_endpoint | ☆ 昇腾 GVA 地址映射适配 | 0.40 |
+| 1C. batch_copy_with_gva() | 直接使用 GVA 地址进行 D2RH、RH2D 拷贝 | ☆ PR #2881 `batch_get_into_multi_buffer_ranges` 支持 ranged transfer，但未直接暴露 GVA-based copy 接口；`device/cuda_ipc_buffer.h` 有 GPU IPC 机制但非 Ascend | ☆ 需新增 Ascend GVA-based batch copy 接口 | 0.60 |
+| 1D. batch_copy_finished() | 结束拷贝 | ☆ session API 的 `batch_get_session_end` / `batch_put_session_end` 已有 finalize 语义 | ☆ 适配 GVA copy 的 finalize | 0.20 |
+| 1E. batch_add_lease() / batch_remove_lease() | 对 key 添加/释放租约 | ☆ `deadline_scheduler.h` + `pinned_buffer_pool.h` 有 lease 相关机制；session API 的 `batch_put_session_revoke` 有类似语义 | ☆ 需新增 key-level lease batch API | 0.40 |
+| 1F. 端到端集成测试 | Layerwise 池化传输 + DSA Offload 端到端验证 | ☆ 无昇腾环境 E2E 测试 | ☆ 昇腾环境 E2E | 0.30 |
+| **合计** | | | | **~2.20** |
+
+> 对齐需求标注：~3 人月。上游已有 session API + allocate_host_buffer + shared segment RFC，实际工作集中在 GVA-based batch copy 接口新增和昇腾适配，估算 2.2 人月，偏差在合理范围。
+
+### 2.3 构建节奏
+
+| 阶段 | 周期 | 交付件 |
+|------|------|--------|
+| P1: 上游 API 评估 + 昇腾适配 | 第 1-3 周 | session API / allocate_host_buffer 昇腾环境验证 + GVA 地址映射方案 |
+| P2: GVA batch copy 接口 | 第 4-7 周 | batch_copy_with_gva / batch_copy_finished / batch_add_lease 接口实现 |
+| P3: 端到端测试 | 第 8-10 周 | Layerwise + DSA Offload E2E + 性能基线 |
+
+---
+
+## 3. 需求二：MooncakeStore 高可用加固
+
+> 诉求来源：当前 MooncakeStore 高可用模式能力较不成熟，需要加固以支撑商用。
+
+### 3.1 现状分析（代码级）
+
+**(1) HA 模式基于 ETCD，K8s 原生支持不成熟**
+
+当前 HA 通过 etcd leader election 实现（`ha_helper.h` Active-Standby）。上游 Issue #2643 指出：etcd 和 K8s HA 后端互斥构建（两个不同 Go 模块），导致 pip 包需按 HA 后端分版本，K8s HA 后端难以与 SGLang/vLLM 集成。Issue #1856 提交 K8s-native Leader Election PR（基于 `coordination.k8s.io/v1` Lease），已拆分为 Go shared library（PR #1910）+ C++ coordinator（PR #1956），但尚未合入。
+
+**(2) Master 主备切换不支持恢复元数据**
+
+RFC #1150 明确指出：Master HA 只能保证"快速启动"但无法解决缓存数据连续性问题。主备切换后内存池数据信息丢失。当前 `master_snapshot_manager.h` / `master_snapshot_repository.h` 提供快照管理框架，`MetadataSerializer` 提供序列化能力，但端到端恢复流程未闭环。Issue #2971 指出 etcd OpLog 隐式启用但缺乏 retention 和完整元数据复制。Issue #2807 质疑 etcd leader/follower 数据一致性同步路线图。
+
+**(3) HIXL 传输接口 RAS 场景 core dump**
+
+Issue #2440 报告 mooncake+hixl 在 final destruction phase core dump，stack trace 指向 `libascend_trace.so` 的 `free()` 调用。RAS 场景（对 P/D 节点注入故障）下 HIXL 接口可靠性不足。
+
+### 3.2 需求拆解
+
+| 序号 | 子任务 | 上游现状 | InferNex 适配 | 工作量（人月） |
+|------|--------|----------|-------------|-------------|
+| 2A | HA 模式直接基于 K8s（支持更多 RAS 场景异常处理能力） | ☆ Issue #1856 K8s-native Leader Election 已提交 PR 但未合入；Issue #2643 etcd+k8s HA-wrapper 合并方案推进中；`k8s_lease_helper.h` 已有 K8s lease 辅助 | ☆ 跟踪 PR #1910/#1956 合入，适配 InferNex 部署 | ~1.5（对齐需求 1.5 人） |
+| 2B | Master 主备切换后增加重建元数据能力 | ☆ RFC #1150 提出持久化和恢复方案；`master_snapshot_manager` 框架已有但恢复流程未闭环；Issue #2971 OpLog retention 缺失；Issue #2807 数据一致性路线图未明确 | ☆ 需推进 RFC #1150 实现，完善快照恢复+OpLog retention | ?（涉及 Master 架构演进） |
+| 2C | HIXL 传输接口 RAS 场景端到端加固 | ☆ Issue #2440 core dump（libascend_trace.so free 路径）；HIXL 传输在故障注入场景下接口可靠性不足 | ☆ 需端到端加固 HIXL 接口（deregistration/析构路径） | 1~2（对齐需求） |
+
+### 3.3 构建节奏
+
+| 阶段 | 周期 | 交付件 |
+|------|------|--------|
+| P1: K8s HA 跟踪+适配 | 2026 Q3~Q4 | 跟踪 PR #1910/#1956/#2643 合入；InferNex Helm chart 适配 K8s HA 后端 |
+| P2: 元数据恢复方案 | 2026 Q4~2027 Q1 | 推进 RFC #1150；快照恢复 + OpLog retention 完善 |
+| P3: HIXL 接口加固 | 2026 Q4 | Issue #2440 根因修复 + RAS 故障注入测试覆盖 |
+
+---
+
+## 4. 需求三：存算分离分离式部署
+
+> 诉求来源：当前 MooncakeStore 存算分离部署能力在昇腾上尚不成熟，无法很好做到和推理引擎解耦，推理引擎挂死会导致本地池化系统一起挂死，数据丢失。
+
+### 4.1 现状分析（代码级）
+
+当前 Mooncake Client 与推理引擎运行在同一进程中（`real_client.h` 的 MooncakeDistributedStore 作为 Python 扩展被 vLLM 加载）。推理引擎挂死时，Mooncake Client 所在进程也挂死，本地池化的内存段（HBM/DRAM）数据随之丢失。
+
+上游 `real_client.h` 已有独立二进制部署模式（`setup_p2p_real_client` 支持 `master_server_addr` + `client_rpc_port` 独立启动），但 vLLM-Ascend 集成路径仍为进程内嵌模式（`MooncakeLayerwiseConnector` / `MooncakeConnectorV1` 在引擎进程内运行）。
+
+Issue #2731 GDS 架构提到 standalone-store 模式（独立 store 进程拥有 SSD 池，vLLM 作为纯请求者），为存算分离提供了架构参考，但当前仅针对 SSD offload，未覆盖 HBM/DRAM 层。
+
+### 4.2 需求拆解
+
+| 序号 | 子任务 | 上游现状 | InferNex 适配 | 工作量（人月） |
+|------|--------|----------|-------------|-------------|
+| 3A | RDMA（A2, A3, A5）, UB UBOE（A5）场景存算分离 | ☆ `real_client.h` 支持独立二进制部署（`setup_p2p_real_client`）；Issue #2731 standalone-store 模式提供架构参考；但 vLLM-Ascend 集成路径仍为进程内嵌 | ☆ 需改造 vLLM-Ascend Mooncake Connector 为独立进程模式，引擎通过 RPC + RDMA 访问独立 Store 进程 | ~3（对齐需求） |
+| 3B | HCCS（A3）场景存算分离 | ☆ HCCS 场景下 Mooncake 传输依赖 HCCS 总线，进程间分离需额外处理 HCCS 设备亲和性 | ☆ 需评估 HCCS 场景下进程间共享 HCCS 设备的可行性 | ~1（对齐需求） |
+
+### 4.3 构建节奏
+
+| 阶段 | 周期 | 交付件 |
+|------|------|--------|
+| P1: 架构设计 | 第 1-4 周 | 存算分离架构 RFC（RDMA/HCCS 两种场景）+ Connector 改造方案 |
+| P2: RDMA 场景实现 | 第 5-12 周 | 独立 Store 进程 + vLLM-Ascend Connector RPC 化改造 + RDMA 传输验证 |
+| P3: HCCS 场景实现 | 第 13-16 周 | HCCS 设备亲和性 + 进程间共享方案 |
+| P4: 端到端测试 | 第 17-18 周 | 引擎挂死后 Store 数据不丢失验证 + 性能基线 |
+
+---
+
+## 5. 需求四：4 级缓存，更大的内存池，更高的命中率，更优的 SSD 性能
+
+> 诉求来源：当前 Mooncake 多级缓存能力存在待适配问题。
+
+### 5.1 现状分析（代码级）
+
+> ★ 重大更新：Mooncake main 分支已新增 `DfsReplicaData` + `DistributedStorageBackend` + `DfsGlobalAllocator`，L4 共享盘存储的框架级抽象**已存在**，但昇腾环境未穿刺验证。
 
 **(1) Replica 层 -- 已有分布式文件系统副本类型**
 
-`replica.h:222-234` 定义了 `DistributedFSDescriptor` 和 `DfsReplicaData`：
-- `DistributedFSDescriptor`：含 `file_path` + `offset` + `object_size` + `transport_endpoint`（可选），支持共享文件系统路径寻址
-- `DfsReplicaData`：封装 `DistributedFSDescriptor`，用于分布式文件系统上的 KVCache 副本
-- `Replica` 类构造函数（`replica.h:305-307`）支持 `DistributedFSDescriptor` 直接构造 DFS 副本
-- `Replica::is_dfs_replica()`（`replica.h:429`）和 `get_dfs_descriptor()`（`replica.h:436-441`）提供类型检查和描述符访问
-
-当前 Replica 类型体系（5 种）：
-- `MemoryReplicaData` -- 内存副本（HBM/DRAM）
-- `NoFReplicaData` -- NVMe-oF SSD 副本（带 buffer）
-- `DiskReplicaData` -- 本地磁盘副本（file_path + object_size）
-- `LocalDiskReplicaData` -- 本地磁盘副本（client_id + transport_endpoint）
-- **`DfsReplicaData` -- 分布式文件系统副本（DistributedFSDescriptor）← 已存在**
+`replica.h:222-234` 定义了 `DistributedFSDescriptor`（file_path + offset + object_size + transport_endpoint）和 `DfsReplicaData`。当前 Replica 类型体系 5 种：MemoryReplicaData / NoFReplicaData / DiskReplicaData / LocalDiskReplicaData / **DfsReplicaData**。
 
 **(2) DistributedStorageBackend -- 已有共享盘存储后端抽象**
 
-`include/storage/distributed/distributed_storage_backend.h` 定义 `DistributedStorageBackend` 类：
-- 支持两种存储模式：`DistributedStorageMode::kFileSystem`（分布式文件系统）和 `kObjectStorage`（对象存储）
-- `BatchOffload()` 接口支持批量 offload 到分布式存储
-- `IsEnableOffloading()` 控制是否启用 offload
-- 配合 `FileSystemAdapter` 抽象接口（`fs_adapter.h`），`PosixFsAdapter`（`posix_fs_adapter.h`）为 POSIX 实现
+`include/storage/distributed/distributed_storage_backend.h`：kFileSystem / kObjectStorage 两种模式，配合 `PosixFsAdapter`（`posix_fs_adapter.h`）和 `DfsGlobalAllocator`（`dfs_global_allocator.h`）。
 
-`DfsGlobalAllocator`（`dfs_global_allocator.h`）提供分布式文件系统全局内存分配：
-- `Allocate()` 返回 `DistributedFSDescriptor`（含 file_path + offset）
-- 内部使用 `OffsetAllocator` 管理分配偏移
-- 支持 `PendingEviction` 机制
-
-**(3) NoFSegmentManager -- NVMe-oF SSD 段管理已独立**
-
-`segment.h:529-598` 定义 `NoFSegmentManager`：
-- 管理 NVMe-oF SSD 段（`NoFSegment`），独立于主 `SegmentManager`
-- `ScopedNoFSegmentAccess` 提供 RAII 式段访问
-- `GetMountedSegments()` 返回 `MountedNoFSegmentSnapshot`（含 segment_id + base + size + te_endpoint）
-- `master_service.h:197-300` 中 `MountNoFSegment`/`ReMountNoFSegment`/`UnmountNoFSegment`/`GetAllNoFSegments` 已集成到 MasterService
-
-**(4) Master Service -- 已有分布式存储集成和外部元数据服务**
-
-`master_service.h:67` 前向声明 `DfsGlobalAllocator`，`master_service.h:2571` 持有 `std::unique_ptr<DfsGlobalAllocator> dfs_allocator_` 成员。
-
-`master_service.h:2545-2562` 已集成 `HttpMetadataServer`：
-- `http_metadata_server_` 指针，支持外部 HTTP 元数据服务
-- `http_metadata_remote_`（`MetadataStoragePlugin`）远程元数据客户端
-- `http_metadata_cleanup_thread_` 清理线程
-- `master.yaml` 中 `enable_http_metadata_server` + `http_metadata_server_port` 配置项
-
-**(5) Ascend 平台支持现状**
-
-Ascend 传输层已集成（`mooncake-transfer-engine/include/transport/ascend_transport/`）。`real_client.cpp:294-295` 支持 Ascend 内存段分配。
-
-`include/device/` 目录提供设备抽象框架：
-- `accelerator_device.h` / `accelerator_registry.h` -- 加速器设备抽象与注册
-- `runtime_accelerator.h` -- 运行时加速器接口
-- `cuda_ipc_buffer.h` -- CUDA IPC buffer（GPU 直接访问）
-- AscendCacheTier 是 `CacheTier` 的昇腾实现（`-DUSE_ASCEND_CACHE_TIER=ON`）
-
-**但昇腾平台的 L4 分布式存储路径（`DistributedStorageBackend` + `DfsGlobalAllocator`）尚未穿刺验证。**
-
-**(6) 上游 PR 进展**
+**(3) 上游 PR 进展**
 
 | PR | 状态 | 内容 |
 |-----|------|------|
-| #3427 | open | Extract LocalSSD management from SegmentManager -- 将 LocalSSD 运行时状态独立为 `LocalSsdManager` |
-| #3467 | open | Bucket: add MAX_PHYSICAL_BYTES cap on real shared-disk usage -- 按实际磁盘用量（stat.st_blocks）限制共享盘用量 |
-| #3491 | open | Add GDS offload for mooncake-store -- 基于 GDS transport 直接存储访问 |
-| #3479 | open | fix(store): deduplicate SSD carryover keys -- 修复 `GroupOffloadingKeysByBucket()` carryover key 重复 |
-| #3488 | open | perf(store): batch io_uring bucket reads -- `UringFile::batch_read()` 批量对齐读取 |
+| #3427 | open | Extract LocalSSD management from SegmentManager |
+| #3467 | open | Bucket: MAX_PHYSICAL_BYTES cap on shared-disk usage |
+| #3491 | open | Add GDS offload for mooncake-store |
+| #3479 | open | fix(store): deduplicate SSD carryover keys |
+| #3488 | open | perf(store): batch io_uring bucket reads |
+| #2827 | open | Bug: DSV4 SSD offload stress testing repeat offloading（功能性问题） |
 
-### 2.2 需求拆解（更新后）
+**(4) SSD 预取上游已有 RFC + draft PR**
 
-| 子任务 | 描述 | 上游现状 | InferNex 适配 |
-|--------|------|----------|-------------|
-| 1A. ~~共享盘 Replica 类型扩展~~ | ~~新增 SharedDiskReplicaData~~ | ★ **已存在** `DfsReplicaData` + `DistributedFSDescriptor`（`replica.h:222-234`） | 无需新增，直接使用 |
-| 1B. StorageBackend 共享盘适配 | 抽象共享盘后端，启用 eviction | ★ **已存在** `DistributedStorageBackend`（kFileSystem/kObjectStorage）+ `DfsGlobalAllocator` + `PosixFsAdapter` | 昇腾环境穿刺验证 + eviction 策略适配 |
-| 1C. Master 路径管理扩展 | 多挂载点注册与容量管理 | ☆ `DfsGlobalAllocator` 已在 MasterService 中集成（`dfs_allocator_`），但 root_fs_dir 仍为单一配置 | 评估多挂载点需求，可能需扩展配置 |
-| 1D. Ascend 平台 I/O 优化 | 昇腾环境 I/O 路径优化 | ☆ `posix_file.cpp` 基础 POSIX I/O，PR #3488 batch io_uring 可参考 | 评估 io_uring/aio 在昇腾环境的兼容性 |
-| 1E. cache-indexer L3 索引扩展 | L3 索引增加 SSD/DFS 层查询 | ☆ 当前 cache-indexer 轮询 Mooncake Master `/get_all_keys`（不含 SSD 层 key） | 需评估 Master 是否返回 DFS 副本信息 |
-| 1F. 测试与验证 | 共享盘 L4 缓存端到端测试 | ☆ 无昇腾环境测试 | E2E 测试（put/get/evict/offload on DFS） |
+RFC #3417（Explicit SSD->DRAM Prefetch Trigger）+ PR #2646（Prefetch SSD-Only Objects to DRAM on Exist）。
 
-### 2.3 工作量估算（更新后）
+### 5.2 需求拆解
 
-| 子任务 | 新增/修改代码（LOC） | 人月 |
-|--------|---------------------|------|
-| 1A. ~~Replica 类型扩展~~ | ~~已存在，0~~ | 0 |
-| 1B. StorageBackend 昇腾适配 | ~600（仅昇腾适配+eviction策略） | 0.20 |
-| 1C. Master 配置扩展 | ~300（多挂载点配置） | 0.10 |
-| 1D. Ascend I/O 优化 | ~1500（io_uring适配） | 0.50 |
-| 1E. cache-indexer L3 扩展 | ~600（SSD/DFS层查询适配） | 0.20 |
-| 1F. 测试 | ~1200 | 0.40 |
-| **合计** | **~4200** | **1.40** |
+| 序号 | 子任务 | 上游现状 | InferNex 适配 | 工作量（人月） |
+|------|--------|----------|-------------|-------------|
+| 4A | SSD 能力仅支持到 Local SSD，基于共享盘存储的 L4 缓存尚未穿刺（仅昇腾） | ★ `DfsReplicaData` + `DistributedStorageBackend` + `DfsGlobalAllocator` 已存在；PR #3427/#3467/#3491 推进中；Issue #2827 SSD 功能性问题待修复 | ☆ 昇腾环境穿刺验证 + eviction 策略适配 + cache-indexer L3 索引扩展（当前 `/get_all_keys` 不返回 SSD 层 key） | 1.5~2（对齐需求） |
+| 4B | 当前 SSD 不支持预取功能，IO bound 场景收益小（已有 draft PR 和社区 RFC） | ★ RFC #3417 + PR #2646 已有 draft 实现；`file_storage.h` 已有 `BatchLoad`/`AllocateBatch` 接口；PR #3488 batch io_uring | ☆ 对接 InferNex cache-indexer + router 触发 prefetch；PR #2646 昇腾适配 | 2~3（对齐需求） |
 
-> ★ 工作量从原估算 2.20 人月下调至 1.40 人月（上游框架已存在，仅需昇腾适配和验证）。
-> 对齐需求标注：1.5~2 人，按 3K/人月换算约 0.5~0.67 人月 -- 上游框架成熟度超出预期，实际工作量集中在昇腾适配和测试验证。
-
-### 2.4 构建节奏（更新后）
+### 5.3 构建节奏
 
 | 阶段 | 周期 | 交付件 |
 |------|------|--------|
-| P1: 昇腾环境穿刺 | 第 1-2 周 | `DistributedStorageBackend` + `DfsGlobalAllocator` 在昇腾环境编译+运行验证 |
-| P2: eviction 策略适配 | 第 3-4 周 | 共享盘 eviction 协议适配（参考 3FS 禁用 eviction 的教训） |
-| P3: cache-indexer L3 扩展 | 第 5-6 周 | L3 索引增加 DFS 副本查询 |
-| P4: 集成测试 | 第 7-8 周 | E2E 测试 + 性能基线（对比 Local SSD） |
+| P1: L4 昇腾穿刺 + SSD 功能性加固 | 第 1-4 周 | DistributedStorageBackend 昇腾环境验证 + Issue #2827 联合修复 |
+| P2: SSD 预取适配 | 第 5-10 周 | RFC #3417 + PR #2646 昇腾适配 + cache-indexer/router 触发 |
+| P3: 集成测试 | 第 11-12 周 | L4 + 预取 E2E + IO bound 性能基线 |
 
 ---
 
-## 3. 需求二：SSD 预取功能
+## 6. 需求五：更大的内存池，更大的集群
 
-### 3.1 现状分析（代码级，更新后）
+> 诉求来源：当前 MooncakeStore 机制在扩容场景存在瓶颈，Mooncake Master Service 作为单一中心化服务，大集群场景容易成为瓶颈。
 
-> ★ 重大更新：上游已有 RFC #3417 + draft PR #2646，预取框架**已存在 draft 实现**。
+### 6.1 现状分析（代码级）
 
-**(1) 上游 RFC 与 draft PR**
+> ★ 重大更新：上游已有 `HttpMetadataServer` + `MetadataStoragePlugin` + `NoFSegmentManager` + `hot_standby_service` + `enable_oplog`，分层元数据和 HA 的基础设施**已初步存在**。
 
-| 编号 | 类型 | 内容 |
-|------|------|------|
-| RFC #3417 | RFC | Explicit SSD->DRAM Prefetch Trigger -- router 在请求进入引擎前显式触发 SSD->DRAM 搬移，将 IO 移出 `get` 关键路径。数据落入专用 transit buffer（按 pipeline depth 分配），enqueue 时授予 lease。窗口错过或内存压力超限则回退到当前 SSD 读。 |
-| PR #2646 | draft PR | Prefetch SSD-Only Objects to DRAM on Exist -- `is_exist`/`batch_is_exist` 调用时 `ExistOptions.prefetch_to_memory=true`，异步提升 SSD-only keys（LOCAL_DISK，无 MEMORY）到 DRAM。核心变更：专用 prefetch RPC 路径（`GetReplicaListForPrefetch`/`BatchGetReplicaListForPrefetch`/`RegisterPrefetchTask`），chunked batch query（128 keys/chunk），bounded prefetch_pool_（4 线程），PrefetchThrottle（dedup TTL + DRAM-pressure cooldown）。 |
+**(1) 外部元数据服务**
 
-**(2) 当前 SSD 读取路径（file_storage.h 代码级）**
-
-`FileStorage`（`file_storage.h:14-192`）封装了完整的 SSD offload 路径：
-- `OffloadObjects()` -- 异步 offload 对象到 SSD
-- `BatchLoad()`（`file_storage.h:164`）-- 同步批量加载
-- `AllocateBatch()` / `LoadBatch()` -- 批量分配和加载接口
-- `RunDiskWatermarkEviction()` -- 水位驱动 eviction
-- `NotifyEvictedDiskReplicas()` -- eviction 通知
-- `ReRegisterOffloadedObjects()` -- Master 重启后 SSD 元数据同步
-- `IsPerBucketSoftOffloadError()` -- per-bucket 软错误分类
-
-`LocalDiskSegment`（`segment.h:90-115`）维护 SSD offload 状态：
-- `offloading_objects` -- 待 offload 对象映射
-- `promotion_objects` -- 待提升对象队列（`TryPushPromotionQueue` 在 get 命中 LOCAL_DISK-only key 时触发）
-- `pending_remove_all` -- 全量 SSD 清除标志
-
-**(3) 已有的提升机制（promotion-on-hit）**
-
-`segment.h:98-102` 中 `promotion_objects` 队列已实现"命中时提升"：当 `get` 命中 LOCAL_DISK-only key 时，`TryPushPromotionQueue` 将其加入提升队列。但这是**同步被动提升**（命中后才触发），非**异步预取**（请求到达前预加载）。
-
-**(4) IO bound 场景下的收益缺失**
-
-当前提升路径（命中时触发）无法消除首次访问的 SSD 读延迟。RFC #3417 的核心价值在于将预取从"命中后被动提升"变为"路由器主动预取"，将 IO 移出 `get` 关键路径。
-
-### 3.2 需求拆解（更新后）
-
-| 子任务 | 描述 | 上游现状 | InferNex 适配 |
-|--------|------|----------|-------------|
-| 2A. 预取策略引擎 | 访问模式预测 + 显式 hint | ☆ RFC #3417 提出 router 显式触发；PR #2646 实现 `is_exist` 触发 | 对接 InferNex cache-indexer：router 是第一个知道请求将命中 SSD 的组件，可触发 prefetch |
-| 2B. 异步 I/O 路径 | io_uring / aio 异步预读 | ☆ `file_storage.h` 已有 `BatchLoad`/`AllocateBatch`/`LoadBatch` 同步接口；PR #3488 `UringFile::batch_read()` 批量异步读取 | 评估 PR #3488 在昇腾环境兼容性 |
-| 2C. StorageBackend 集成 | prefetch 触发与异步管道 | ☆ PR #2646 实现了专用 prefetch RPC 路径 | 评估 PR #2646 合入状态，适配昇腾 |
-| 2D. Master 协同 | 全局访问模式下发 | ☆ PR #2646 支持 `prefetch_offload_object` RPC 跨节点 holder 委托 | 评估是否需 Master 全局模式感知 |
-| 2E. 测试与基准 | 预取命中率 + IO bound TTFT/TPS | ☆ PR #2646 含测试 | 昇腾环境基准 |
-
-### 3.3 工作量估算（更新后）
-
-| 子任务 | 新增/修改代码（LOC） | 人月 |
-|--------|---------------------|------|
-| 2A. 预取策略对接 | ~600（对接 cache-indexer + router 触发） | 0.20 |
-| 2B. 异步 I/O 适配 | ~900（PR #3488 昇腾适配） | 0.30 |
-| 2C. PR #2646 适配 | ~1200（昇腾适配+集成） | 0.40 |
-| 2D. Master 协同 | ~300（可选全局模式） | 0.10 |
-| 2E. 测试与基准 | ~1200 | 0.40 |
-| **合计** | **~4200** | **1.40** |
-
-> ★ 工作量从原估算 2.50 人月下调至 1.40 人月（上游已有 RFC + draft PR + BatchLoad 接口，核心工作变为对接和昇腾适配）。
-> 对齐需求标注：2~3 人，按 3K/人月换算约 0.67~1.0 人月 -- 上游 RFC 和 draft PR 成熟度超出预期。
-
-### 3.4 构建节奏（更新后）
-
-| 阶段 | 周期 | 交付件 |
-|------|------|--------|
-| P1: 社区 RFC 对齐 + PR 评估 | 第 1-2 周 | RFC #3417 + PR #2646 评估报告 + 昇腾适配方案 |
-| P2: 核心适配 | 第 3-5 周 | cache-indexer 触发 + 异步 I/O 昇腾适配 + PR #2646 集成 |
-| P3: 优化与测试 | 第 6-8 周 | IO bound 基准测试 + 预取命中率调优 |
-
----
-
-## 4. 需求三：MooncakeStore 去中心化元数据架构
-
-### 4.1 现状分析（代码级，更新后）
-
-> ★ 重大更新：上游已有 `HttpMetadataServer` + `MetadataStoragePlugin` + `NoFSegmentManager` + `MasterSnapshotManager` + `hot_standby_service` + `enable_oplog`，分层元数据和 HA 的基础设施**已初步存在**。
-
-**(1) 外部元数据服务（HttpMetadataServer）**
-
-`master_service.h:2545-2562`：
-- `HttpMetadataServer* http_metadata_server_` -- 外部 HTTP 元数据服务指针
-- `MetadataStoragePlugin http_metadata_remote_` -- 远程元数据存储插件
-- `http_metadata_prefix_` -- HTTP 元数据 key 前缀
-- `http_metadata_cleanup_thread_` / `http_metadata_cleanup_queue_` -- 清理线程和队列
-- `setHttpMetadataServer()` / `setHttpMetadataRemoteUrl()` -- 配置接口
-- `master.yaml`: `enable_http_metadata_server: false` + `http_metadata_server_port: 8080`
-
-**意义：Master 已支持将元数据存储卸载到外部 HTTP 服务，为去中心化元数据提供基础设施。**
+`master_service.h:2545-2562`：`HttpMetadataServer` + `MetadataStoragePlugin`（`http_metadata_remote_`），`master.yaml` 配置 `enable_http_metadata_server`。
 
 **(2) NoFSegmentManager 独立段管理**
 
-`segment.h:529-598` + `master_service.h:197-300`：
-- `NoFSegmentManager` 独立于 `SegmentManager`，管理 NVMe-oF SSD 段
-- MasterService 中 `nof_segment_manager_` 成员独立于主 segment 管理
-- `MountNoFSegment` / `ReMountNoFSegment` / `UnmountNoFSegment` / `GetAllNoFSegments` 独立 RPC 接口
-- `NoFHeartbeatState` + `nof_heartbeat_thread_` 独立心跳管理
-- `NoFBatchEvict` 独立 eviction 路径
-
-**意义：SSD 段管理已从主 SegmentManager 中分离，为层级化元数据管理提供初步基础。**
+`segment.h:529-598`：NVMe-oF SSD 段管理独立于主 SegmentManager，`master_service.h` 有独立的 Mount/ReMount/Unmount/GetAllNoFSegments 接口。
 
 **(3) HA 热备与快照**
 
-新增头文件和组件：
-- `hot_standby_service.h` -- 热备服务
-- `standby_state_machine.h` -- 备机状态机
-- `master_snapshot_manager.h` / `master_snapshot_repository.h` -- Master 快照管理和存储
-- `master_service.h:2247-2277` `MetadataSerializer` -- 元数据序列化/反序列化（支持 fork serialize）
-- `master.yaml`: `enable_oplog: false` + `oplog_poll_interval_ms: 1000` -- OpLog HA 热备复制
-- PR #3493 -- simplify P2P client HA recovery for Redis HA mode
+`hot_standby_service.h` + `standby_state_machine.h` + `master_snapshot_manager.h` + `enable_oplog`（OpLog 复制）+ `MetadataSerializer`（fork serialize）。
 
-**意义：HA 已从简单的 etcd Active-Standby 升级为支持 OpLog 复制和快照恢复的完整热备体系。**
+**(4) 上游 RFC 与社区进展**
 
-**(4) 元数据分片（不变）**
+RFC #2117（Hierarchical Arch，AntGroup 10,000 卡 Master 瓶颈）+ Issue #3452（Master OOM）+ Issue #1883 Roadmap（Store V3 Evolution）。
 
-`master_service.h:1574` `kNumShards = 1024`，`std::array<MetadataShard, kNumShards> metadata_shards_`，仍为单进程内分片。但 `MetadataAccessorRW`/`MetadataAccessorRO`（`master_service.h:2054-2348`）提供了完整的 RAII 式元数据访问封装，为未来跨进程分片提供了接口基础。
+### 6.2 需求拆解
 
-**(5) 分布式锁与租约**
+| 序号 | 子任务 | 上游现状 | InferNex 适配 | 工作量（人月） |
+|------|--------|----------|-------------|-------------|
+| 5A | 探索去中心化分布式元数据架构或 hierarchical 元数据架构，支持大集群统一内存池 | ★ `HttpMetadataServer` + `MetadataStoragePlugin` 已支持外部元数据；`NoFSegmentManager` 已独立；`hot_standby` + `enable_oplog` 已有 HA 基础；RFC #2117 已提出层级化架构 | ☆ 需推进 RFC #2117 实现；InferNex cache-indexer 需适配新元数据架构（当前轮询 `/get_all_keys`，Master 瓶颈影响采集延迟） | ?（涉及 MooncakeStore V3 架构演进） |
 
-- `master_service.h:891-906` `setHttpMetadataServer()` / `setHttpMetadataRemoteUrl()` 支持远程元数据
-- `deadline_scheduler.h` -- 截止时间调度器
-- `k8s_lease_helper.h` -- K8s lease 辅助
-- `pinned_buffer_pool.h` / `pinned_host_buffer.h` -- 缓冲区固定与租约
-
-**(6) 上游 RFC 与社区进展**
-
-| 编号 | 类型 | 内容 |
-|------|------|------|
-| RFC #2117 | RFC | Hierarchical Arch for Intra/Inter Data Center -- AntGroup 10,000 卡规模 Master 瓶颈实践 |
-| Issue #3452 | Bug | mooncake-master OOM restart under long-context PD-separation |
-| Issue #1883 | Roadmap | Milestone 2: Store V3 Evolution (TE & Store Decoupling) |
-| PR #3493 | open | simplify P2P client HA recovery for Redis HA mode |
-
-### 4.2 需求拆解（更新后）
-
-#### 路径 A：层级化元数据架构（Hierarchical）
-
-| 子任务 | 描述 | 上游现状 |
-|--------|------|----------|
-| 3A-1. Region Master 层 | 引入 Region Master | ☆ `HttpMetadataServer` + `MetadataStoragePlugin` 可作为 Region 元数据服务的实现基础 |
-| 3A-2. Global Coordinator | 全局协调器 | ☆ 当前 etcd leader election 可复用 |
-| 3A-3. Client 路由层 | key 前缀/哈希路由 | ☆ `MasterClient` 当前连接单一地址，需扩展路由 |
-| 3A-4. 跨 Region 操作 | 跨 Region replica | ☆ `DfsGlobalAllocator` + `DistributedStorageBackend` 可支撑跨 Region 存储 |
-| 3A-5. 元数据同步 | Region 间一致性 | ☆ `MetadataSerializer` + `master_snapshot_manager` 提供快照序列化基础 |
-
-#### 路径 B：去中心化元数据架构（Distributed）
-
-| 子任务 | 描述 | 上游现状 |
-|--------|------|----------|
-| 3B-1. 分布式元数据存储 | Master 变为无状态代理 | ★ `HttpMetadataServer` + `MetadataStoragePlugin` 已支持外部元数据存储 |
-| 3B-2. 一致性哈希路由 | Client 直连元数据分片 | ☆ 需新增 Client 路由层 |
-| 3B-3. 分布式锁与事务 | 跨分片操作 | ☆ `deadline_scheduler` + `k8s_lease_helper` 可参考 |
-| 3B-4. 缓存与回填 | Client 侧缓存 | ☆ `local_hot_cache.h` 的 LRU 机制可参考 |
-| 3B-5. 故障恢复 | 分片迁移 | ★ `hot_standby_service` + `master_snapshot_manager` + `enable_oplog` 已提供 HA 基础 |
-
-### 4.3 工作量估算（更新后）
-
-**路径 A（层级化）：**
-
-| 子任务 | 新增/修改代码（LOC） | 人月 |
-|--------|---------------------|------|
-| 3A-1. Region Master | ~1800（基于 HttpMetadataServer 扩展） | 0.60 |
-| 3A-2. Global Coordinator | ~1500（基于 etcd 扩展） | 0.50 |
-| 3A-3. Client 路由层 | ~1200 | 0.40 |
-| 3A-4. 跨 Region 操作 | ~1800 | 0.60 |
-| 3A-5. 元数据同步 | ~1200（基于 MetadataSerializer） | 0.40 |
-| 测试 | ~1800 | 0.60 |
-| **合计** | **~9300** | **3.10** |
-
-**路径 B（去中心化）：**
-
-| 子任务 | 新增/修改代码（LOC） | 人月 |
-|--------|---------------------|------|
-| 3B-1. 分布式元数据存储 | ~600（HttpMetadataServer 已存在，仅需配置） | 0.20 |
-| 3B-2. 一致性哈希路由 | ~1500 | 0.50 |
-| 3B-3. 分布式锁与事务 | ~1800 | 0.60 |
-| 3B-4. 缓存与回填 | ~1200（参考 local_hot_cache） | 0.40 |
-| 3B-5. 故障恢复 | ~600（hot_standby + oplog 已存在） | 0.20 |
-| 测试 | ~2400 | 0.80 |
-| **合计** | **~8100** | **2.70** |
-
-> ★ 工作量从原估算 5.0~5.4 人月下调至 2.7~3.1 人月（上游已有 HttpMetadataServer / hot_standby / oplog / MetadataSerializer 基础设施）。
-
-### 4.4 构建节奏（更新后）
+### 6.3 构建节奏
 
 | 阶段 | 周期 | 交付件 |
 |------|------|--------|
-| P1: 架构 RFC + 上游对齐 | 第 1-3 周 | V3 架构 RFC + 路径 A/B 对比 + 上游 HttpMetadataServer 评估 |
-| P2: 核心架构实现 | 第 4-12 周 | Region Master / 分布式元数据 + Client 路由 + 跨分片操作 |
-| P3: 兼容性与迁移 | 第 13-16 周 | V2->V3 兼容模式 |
-| P4: 大规模测试 | 第 17-20 周 | 200+ 节点集群测试 |
+| P1: 架构 RFC + 上游对齐 | 第 1-4 周 | V3 架构 RFC + 路径对比（hierarchical vs distributed）+ 上游 HttpMetadataServer 评估 |
+| P2: 核心架构实现 | 第 5-16 周 | Region Master / 分布式元数据 + Client 路由 + 跨分片操作 |
+| P3: 兼容性与迁移 | 第 17-20 周 | V2->V3 兼容模式 |
+| P4: 大规模测试 | 第 21-24 周 | 200+ 节点集群测试 |
 
 ---
 
-## 5. 总览（更新后）
+## 7. 需求六：社区软件栈加固和优化
 
-| 需求 | 代码量（LOC） | 人月 | 建议人数 | 周期 | 原估算 | 变化 |
-|------|-------------|------|---------|------|-------|------|
-| 1. L4 共享盘缓存适配 | ~4200 | 1.40 | 1.5~2 人 | 8 周 | 2.20 | ★ -36%（上游框架已存在） |
-| 2. SSD 预取功能 | ~4200 | 1.40 | 2 人 | 8 周 | 2.50 | ★ -44%（RFC + draft PR 已存在） |
-| 3. 去中心化元数据架构 | ~8100~9300 | 2.7~3.1 | 3 人 | 20 周 | 5.0~5.4 | ★ -44%（HA + 元数据基础设施已存在） |
-| **合计** | **~16500~17700** | **5.5~5.9** | -- | -- | 9.7~10.1 | **★ -42%** |
+> 诉求来源：AscendStore 优化点识别与共创。
+
+### 7.1 需求拆解
+
+| 序号 | 子任务 | 上游现状 | InferNex 现状 | 工作量（人月） | 构建节奏 | 备注 |
+|------|--------|----------|-------------|-------------|---------|------|
+| 6A | AscendDirectTransport 段错误修复（need_update_metadata_segs_ 状态管理） | ☆ Issue #10532 已贡献上游，Mooncake v0.3.9 随机段错误（std::_Hashtable::erase） | ★ InferNex 已贡献 Issue 10532 | 跟踪验证（0.5） | 持续 | ◎ 与需求二 2C HIXL 接口加固有重叠（均为 Ascend 传输层可靠性） |
+| 6B | K8s 环境 NPU 设备 ID 兼容修复 | ☆ Issue #2557 已贡献上游，torch_npu 逻辑 ID 与 ASCEND_RT_VISIBLE_DEVICES 物理 ID 不匹配 | ★ InferNex 已贡献 Issue 2557 | 跟踪验证（0.5） | 持续 | 需确认 vLLM-Ascend v0.18.0 是否已含 PR 2541 |
+| 6C | V1 Mooncake Store Connector register_buffer | ☆ Issue #5044 已贡献上游 | ★ InferNex 已贡献 Issue 5044 | 跟踪验证（0.3） | 持续 | 需确认 Helm chart connectorConfig |
+| 6D | Mooncake P2P HA 恢复优化 | ☆ PR #3493（simplify P2P client HA recovery for Redis HA）推进中 | ☆ InferNex PD 分离部署依赖 P2P HA | 跟踪+适配（0.5） | 2026 Q4 | ◎ 与需求二 2A/2B HA 加固有重叠 |
+| 6E | Mooncake SSD 去重修复 | ☆ PR #3479（deduplicate SSD carryover keys） | ☆ 影响 L4 缓存正确性 | 跟踪验证（0.3） | 2026 Q4 | 依赖需求四 4A |
+| 6F | Mooncake batch io_uring reads 性能优化 | ☆ PR #3488（batch io_uring bucket reads） | ☆ 影响 SSD 缓存读取性能 | 跟踪验证（0.3） | 2026 Q4 | 依赖需求四 4A。`file_storage.h` 已有 `BatchLoad` 接口 |
+| 6G | Mooncake EGM-backed Store pool over NVLink | ☆ RFC #2914 三件套（PR #2966/#3335/#3431），NVLink 直读远端 GPU 内存免 CPU 中转 | ☆ 昇腾无 NVLink，但灵衢/RoCE 可参考 | 评估调研（0.5） | 2027 Q1~Q2 | Mooncake `device/` 已有设备抽象框架 |
 
 ---
 
-## 6. 优先级与依赖关系（不变）
+## 8. 总览
+
+| 需求 | 代码量（LOC） | 人月 | 建议人数 | 周期 |
+|------|-------------|------|---------|------|
+| 1. Layerwise 池化传输 + DSA KV Offload 接口 | ~6600 | 2.20 | 3 人 | 10 周 |
+| 2. MooncakeStore 高可用加固 | ~6000+ | 1.5+?+1~2 | 1.5~3.5 人 | Q3~Q4 持续 |
+| 3. 存算分离分离式部署 | ~9000+ | 3+1 | 4 人 | 18 周 |
+| 4. 4 级缓存（L4 共享盘 + SSD 预取） | ~8400 | 1.5~2 + 2~3 | 3.5~5 人 | 12 周 |
+| 5. Master 去中心化元数据架构 | ~8100~9300 | 2.7~3.1 | 3 人 | 24 周 |
+| 6. 社区软件栈加固和优化 | ~跟踪验证 | 2.1+ | 1~2 人（持续跟踪） | 持续 |
+| **合计** | **~38000+** | **~13~16+** | -- | -- |
+
+---
+
+## 9. 优先级与依赖关系
 
 ```
-需求 1（L4 共享盘）  ──┐
-                       ├──> 需求 2（SSD 预取）依赖 L4 存储层接口
-                       │
-需求 3（元数据架构） ──┘ 独立可并行，但 L4 扩容后元数据压力更大，需协同
+需求 1（Layerwise 接口）──> 需求 3（存算分离）依赖传输接口
+                              │
+需求 2（HA 加固）─────────────┤ 2A/2B 与需求 5 元数据架构协同
+                              │
+需求 4（L4 + 预取）───────────┤ 4A 依赖需求 3 存算分离（独立 Store 进程才有 L4 意义）
+                              │
+需求 5（Master 去中心化）──────┘ 独立可并行，但 L4 扩容后元数据压力更大
+                              │
+需求 6（社区加固）─────────────┘ 持续跟踪，与各需求交叉
 ```
 
 **建议执行顺序:**
-1. 需求 1 + 需求 2 可并行启动（不同团队/人员）
-2. 需求 3 独立启动架构 RFC，但实现阶段需与需求 1 的存储接口对齐
-3. 需求 2 的异步 I/O 路径（2B）可复用需求 1 的 Ascend I/O 优化成果（1D）
+1. 需求 1（Layerwise 接口）+ 需求 2（HA 加固）并行启动
+2. 需求 3（存算分离）依赖需求 1 接口，紧随其后
+3. 需求 4（L4 + 预取）依赖需求 3 存算分离（独立 Store 进程），第三批启动
+4. 需求 5（Master 去中心化）独立启动架构 RFC，实现阶段与需求 4 协同
+5. 需求 6（社区加固）持续跟踪，与各需求交叉推进
 
 ---
 
-## 7. 风险与建议（更新后）
+## 10. 风险与建议
 
-| 风险 | 影响 | 缓解措施 | 状态变化 |
-|------|------|----------|---------|
-| 共享盘 eviction 正确性 | 数据丢失 | 参考 3FS 模式教训；`DistributedStorageBackend` 已有 `IsEnableOffloading` 控制 | ★ 上游已有框架，风险降低 |
-| 预取策略误判 | 内存浪费 / 性能回退 | RFC #3417 设计了 lease + 回退机制；PR #2646 有 PrefetchThrottle | ★ 上游已有设计，风险降低 |
-| V3 架构迁移风险 | 兼容性破坏 | `HttpMetadataServer` + `MetadataStoragePlugin` 支持渐进式卸载；`enable_http_metadata_server` 默认关闭 | ★ 上游已有兼容路径 |
-| 社区 RFC 对齐 | 重复工作 / 方向分歧 | 需求 2 基于 RFC #3417 + PR #2646 深化；需求 3 基于 RFC #2117 | ★ 上游 RFC 已对齐 |
-| 昇腾环境测试覆盖 | 生产环境缺陷 | 需在真实昇腾集群验证 | ☆ 不变，仍需昇腾实机测试 |
-| 上游 PR 合入时间 | 适配依赖未合入 | PR #3427/#3467/#3488/#3491/#2646 均 open 状态 | ☆ 新增风险：需跟踪合入时间 |
-
----
-
-## 8. 上游社区最新代码分析附录（新增）
-
-### 8.1 Mooncake main 分支新增能力（vs 原报告基线）
-
-| 能力 | 关键文件/PR | 原报告结论 | 最新代码结论 |
-|------|-----------|----------|------------|
-| 分布式文件系统副本 | `replica.h:222-234` `DfsReplicaData` + `DistributedFSDescriptor` | "无共享存储寻址能力" | ★ **已存在**，含 file_path + offset + object_size + transport_endpoint |
-| 分布式存储后端 | `distributed_storage_backend.h` `DistributedStorageBackend` | "POSIX 文件 I/O，无共享存储抽象" | ★ **已存在**，kFileSystem/kObjectStorage 两种模式 |
-| 分布式 FS 分配器 | `dfs_global_allocator.h` `DfsGlobalAllocator` | 未提及 | ★ **已存在**，`Allocate()` 返回 `DistributedFSDescriptor` |
-| POSIX FS 适配器 | `posix_fs_adapter.h` `PosixFsAdapter` | "posix_file.cpp 封装最基础 POSIX I/O" | ★ **已抽象**为 `FileSystemAdapter` 接口实现 |
-| NVMe-oF 段管理 | `segment.h:529-598` `NoFSegmentManager` | 未提及 | ★ **已存在**，独立于主 SegmentManager |
-| 外部元数据服务 | `master_service.h:2545-2562` `HttpMetadataServer` | "单一中心化 Master" | ★ **已支持外部元数据**，`enable_http_metadata_server` 配置 |
-| 元数据存储插件 | `MetadataStoragePlugin` | 未提及 | ★ **已存在**，`http_metadata_remote_` 远程元数据客户端 |
-| HA 热备 | `hot_standby_service.h` + `enable_oplog` | "Active-Standby via etcd" | ★ **已升级**为 OpLog 复制 + 快照恢复 |
-| Master 快照 | `master_snapshot_manager.h` / `master_snapshot_repository.h` | 未提及 | ★ **已存在** |
-| 元数据序列化 | `master_service.h:2247-2277` `MetadataSerializer` | 未提及 | ★ **已存在**，支持 fork serialize |
-| SSD 预取 RFC | RFC #3417 + PR #2646 | "无任何预取机制" | ★ **已有 RFC + draft PR**，专用 prefetch RPC 路径 + PrefetchThrottle |
-| SSD 批量读取 | PR #3488 `UringFile::batch_read()` | "全链路同步阻塞 I/O" | ★ **已有批量异步读取** draft PR |
-| SSD 去重 | PR #3479 | 未提及 | ★ **已有修复** PR |
-| 本地热点缓存 | `local_hot_cache.h` `LocalHotCache` | 未提及 | ★ **已存在**（InferNex 贡献上游），LRU + 16MB 块 + LOCAL_MEMCPY |
-| 设备抽象框架 | `device/accelerator_device.h` + `runtime_accelerator.h` | 未提及 | ★ **已存在**，AscendCacheTier 为昇腾实现 |
-| GPU 直接访问 | `device/cuda_ipc_buffer.h` | 未提及 | ★ **已存在**，CUDA IPC buffer |
-
-### 8.2 InferNex 上游贡献在 Mooncake main 中的状态
-
-| InferNex 贡献 | Mooncake 中的位置 | 状态 |
-|-------------|----------------|------|
-| PR 2092 Dual RDMA 前向路径 | Store V3 双向传输 | ★ 已合入 |
-| PR 2407 per-RPC 细粒度指标 | `client_metric.h` + `p2p_client_metric.h` | ★ 已合入 |
-| PR 2429 Ascend DRAM Tier 适配 | `dram_tier.h` / `dram_tier.cpp` | ★ 已合入 |
-| PR 1688 RealClient 压测 | `tests/real_client_stress_workload.py` | ☆ open |
-| PR 2436 跨进程 P2P 测试 | `tests/peer_client_test.cpp` | ☆ open |
-| AscendCacheTier (VRAM) | `USE_ASCEND_CACHE_TIER=ON` | ★ 已合入 |
-| LocalHotCache 热点缓存 | `local_hot_cache.h` (331 lines) | ★ 已合入 |
+| 风险 | 影响 | 缓解措施 |
+|------|------|----------|
+| Layerwise session API 昇腾适配 | GVA 地址映射不兼容 | 需评估 AscendDirectTransport GVA 路径与 cuda_ipc_buffer 差异 |
+| HA K8s 后端 PR 未合入 | 需求 2A 阻塞 | 跟踪 PR #1910/#1956/#2643；必要时 cherry-pick |
+| Master 元数据恢复方案未闭环 | 需求 2B 阻塞 | 推进 RFC #1150；完善 master_snapshot_manager 恢复流程 |
+| HIXL RAS core dump | 需求 2C 阻塞 | Issue #2440 根因修复（libascend_trace.so free 路径） |
+| 存算分离改造影响 vLLM-Ascend 集成 | 需求 3 兼容性 | Connector RPC 化需 vLLM-Ascend 团队协同；保留进程内嵌模式作为兼容 |
+| 共享盘 eviction 正确性 | 数据丢失 | 参考 3FS 禁用 eviction 教训；设计共享盘专用 eviction 协议 |
+| 上游 PR 合入时间 | 多个依赖 PR 均 open | PR #3427/#3467/#3488/#3491/#2646/#3493 跟踪合入 |
+| 昇腾环境测试覆盖 | 生产环境缺陷 | 需真实昇腾集群验证；CI 增加 Ascend 专用测试矩阵 |
